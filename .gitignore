@@ -1,0 +1,7 @@
+/bin/
+*.exe
+# secrets / local
+sa.json
+*.sa.json
+web_signing_key
+.env
