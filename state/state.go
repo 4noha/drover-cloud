@@ -129,12 +129,22 @@ func (c *Client) PushStatus(ctx context.Context, sessions []map[string]any) (cha
 	// Collection("pcs") 列挙に出ない。端末一覧（account scope）で
 	// 拾えるよう、変化があった時だけ親 doc を明示書込（near-$0 維持）。
 	if changed > 0 {
-		// MergeAll＝id/updated_at のみ更新し RegisterPCVersion が入れた
-		// cm_version 等の他フィールドを消さない（全置換 Set だと agent
-		// 版が毎 producer tick で消える実バグになる）。
+		// MergeAll＝id/updated_at/agent_kind のみ更新し RegisterPCVersion が入れた
+		// cm_version 等の他フィールドを消さない（全置換 Set だと agent 版が毎
+		// producer tick で消える実バグになる）。
+		//
+		// agent_kind を毎回 **再表明**するのが重要（敵対的レビューで確認）:
+		// RegisterPCVersion は起動時 1 回しか呼ばれないため、owner の端末削除
+		// （DeletePCByID で pcs/{pc} 全消し）後に、**同一プロセスが dormant→復帰**
+		// して PushStatus すると、この tail が pcs/{pc} を {id,updated_at} だけで
+		// 再生成し agent_kind を永久に欠く→DroverPCs が当該 PC を落とし、その全
+		// セッションが他機のリモート注入から消える。ここで毎回書けば delete→
+		// recreate されても常に agent_kind を持つ（この state モジュールの
+		// PushStatus 書き手は herdr-drover agent のみ＝固定値で正しい）。
 		_, _ = c.fs.Collection("pcs").Doc(c.pcID).Set(ctx, map[string]any{
 			"id":         c.pcID,
 			"updated_at": time.Now().UTC().Format(time.RFC3339),
+			"agent_kind": "herdr-drover",
 		}, firestore.MergeAll)
 	}
 	return changed, nil
@@ -184,12 +194,33 @@ func (c *Client) RegisterPCVersion(ctx context.Context, agentVersion string) err
 	doc := map[string]any{
 		"id":         c.pcID,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		// agent_kind は「この PC は herdr-drover agent」の exact マーカー。
+		// リモート pane 注入(consumer 側 reconcile)が **drover PC のみ**を注入
+		// 対象にするために使う（cm agent の pc は #inj source bridge を持たず
+		// 永久 blank pane になるため。pc_id の文字列推測はしない＝鉄則）。
+		"agent_kind": "herdr-drover",
 	}
 	if agentVersion != "" {
 		doc["cm_version"] = agentVersion
 	}
 	_, err := c.fs.Collection("pcs").Doc(c.pcID).Set(ctx, doc)
 	return err
+}
+
+// DroverPCs は agent_kind=="herdr-drover" の PC id 一覧（リモート pane 注入の
+// 候補＝#inj に応答できる drover agent のみ）。cm agent の pc（agent_kind 無し）や
+// 旧版で未マーカーの pc は含めない＝blank pane を作らない。ListPCs の drover 版。
+func (c *Client) DroverPCs(ctx context.Context) ([]string, error) {
+	docs, err := c.fs.Collection("pcs").
+		Where("agent_kind", "==", "herdr-drover").Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, d.Ref.ID)
+	}
+	return out, nil
 }
 
 // deletePC は pcs/{pcID}（sessions サブコレクション含む）と wake/{pcID}

@@ -156,6 +156,59 @@ func TestPushStatusVersioning(t *testing.T) {
 	}
 }
 
+// TestPushStatusReassertsAgentKindAfterDelete は finding[3] の見張り。owner の端末
+// 削除（DeletePCByID で pcs/{pc} を全消し）後に、**同一プロセス**が dormant→復帰して
+// PushStatus すると MergeAll tail が pcs/{pc} を再生成する。この時 agent_kind を再表明
+// しないと、DroverPCs（agent_kind==herdr-drover の絞り込み）が当該 PC を落とし、その
+// 全セッションが他機のリモート注入から消える（RegisterPCVersion は起動時 1 回のみ＝
+// in-process 復帰では再呼びされないため tail で再表明する必要がある）。
+func TestPushStatusReassertsAgentKindAfterDelete(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t, "pc-akind")
+	hasPC := func(pcs []string) bool {
+		for _, p := range pcs {
+			if p == "pc-akind" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 起動時登録（agent_kind を書く）＋セッション push → DroverPCs に出る。
+	if err := c.RegisterPCVersion(ctx, "v0.3.2"); err != nil {
+		t.Fatalf("RegisterPCVersion: %v", err)
+	}
+	if _, err := c.PushStatus(ctx, []map[string]any{realSession("sid-1", 1.0, true)}); err != nil {
+		t.Fatalf("初期 push: %v", err)
+	}
+	if pcs, err := c.DroverPCs(ctx); err != nil || !hasPC(pcs) {
+		t.Fatalf("初期状態で DroverPCs に居ない: %v err=%v", pcs, err)
+	}
+
+	// owner が端末削除（pcs/{pc} 親 doc も session も全消し）。
+	if err := c.DeletePCByID(ctx, "pc-akind"); err != nil {
+		t.Fatalf("DeletePCByID: %v", err)
+	}
+	if pcs, _ := c.DroverPCs(ctx); hasPC(pcs) {
+		t.Fatalf("削除直後に DroverPCs から消えていない: %v", pcs)
+	}
+
+	// dormant→復帰した同一プロセスが RegisterPCVersion を **再呼びせず** に PushStatus のみ
+	// （内容を変えて changed>0 にし MergeAll tail を発火）。
+	if _, err := c.PushStatus(ctx, []map[string]any{realSession("sid-1", 2.0, false)}); err != nil {
+		t.Fatalf("復帰 push: %v", err)
+	}
+
+	// agent_kind が再表明され DroverPCs に復活しているはず（finding[3] fix）。
+	pcs, err := c.DroverPCs(ctx)
+	if err != nil {
+		t.Fatalf("DroverPCs: %v", err)
+	}
+	if !hasPC(pcs) {
+		t.Fatalf("delete→PushStatus 再生成後に agent_kind が欠け DroverPCs から消えた（finding[3] 退行）: %v", pcs)
+	}
+}
+
 // Phase1: per-PC agent 版 と per-session proxy 版(cm_version)が実
 // Firestore に載り、かつ near-$0（cm_version 変化時のみ version++）
 // を実 API で確認（合成なし）。
