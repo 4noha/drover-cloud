@@ -500,6 +500,11 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 				http.StatusConflict)
 			return
 		}
+		// owner 発行コードでの正規 slave enroll＝再認可。master 削除で立った
+		// revoked/{pc}（ペアリング解除 UI が書く）を解除する。slave は SA を
+		// 持たず自分では ClearRevoked できない＝SA を持つ relay が代行する
+		// （信頼の起点は owner 発行の一回限りコード）。best-effort。
+		_ = s.st.ClearRevoked(ctx, pc)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"role": "slave", "pc": pc,

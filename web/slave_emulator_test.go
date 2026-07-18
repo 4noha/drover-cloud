@@ -499,6 +499,12 @@ func TestEnrollSlaveWithholdsSA(t *testing.T) {
 		t.Fatalf("slave コマンドに --slave が無い: %v", sCode["command"])
 	}
 	const pc = "pcenroll-herdr"
+	// master 削除→slave enroll の実運用を模す: 事前に revoked を立てる。
+	// enroll-slave（owner 発行コード＝再認可）が ClearRevoked を代行しないと
+	// dormant のまま＝この後の /slave/token が 403 になる（旧コードで FAIL）。
+	if err := st.SetRevoked(ctx, pc); err != nil {
+		t.Fatal(err)
+	}
 	code, sResp := enrollExchange(url.Values{
 		"code": {sCode["code"].(string)}, "pc": {pc}, "role": {"slave"}})
 	if code != 200 {
@@ -514,10 +520,15 @@ func TestEnrollSlaveWithholdsSA(t *testing.T) {
 	if secret == "" {
 		t.Fatal("slave_secret が空")
 	}
-	// 発行 secret で /slave/token が通る（bind 済）。
+	// 発行 secret で /slave/token が通る（bind 済＋revoked 解除済）。
 	if c, _ := req(t, "POST", ts.URL+"/slave/token", "",
 		map[string]any{"pc": pc, "secret": secret}); c != 200 {
-		t.Fatalf("enroll 発行 secret で /slave/token が %d", c)
+		t.Fatalf("enroll 発行 secret で /slave/token が %d（revoked 未解除なら 403）", c)
+	}
+	// enroll-slave が revoked/{pc} を解除した（SA レスの slave は自分では
+	// ClearRevoked できず relay が SA で代行）。旧コードは未解除で dormant のまま。
+	if st.IsRevoked(ctx, pc) {
+		t.Fatal("enroll-slave が revoked を解除していない（master 削除後の再 slave enroll が dormant のまま）")
 	}
 
 	// --- 衝突: 既存 master pc を slave enroll で奪えない（409） ---
