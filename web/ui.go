@@ -71,6 +71,9 @@ const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  <button id="addbtn" style="padding:8px 14px;font:14px system-ui;
   background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer">
   ＋ 端末を追加</button>
+ <button id="addbtn-slave" style="padding:8px 14px;font:14px system-ui;
+  background:#475569;color:#fff;border:0;border-radius:6px;cursor:pointer;
+  margin-left:8px">＋ 共用 PC を追加（slave）</button>
  <pre id="enroll" style="display:none;white-space:pre-wrap;background:#17171b;
   border:1px solid #2a2a30;border-radius:8px;padding:12px;margin-top:12px;
   color:#cde;font-size:12px"></pre>

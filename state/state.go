@@ -237,6 +237,8 @@ func (c *Client) deletePC(ctx context.Context, pcID string) error {
 		}
 	}
 	_, _ = c.fs.Collection("pcs").Doc(pcID).Delete(ctx)
+	// slave 認証情報も撤去（「端末解除」で refresh secret ごと無効化）。
+	_, _ = c.fs.Collection("slaves").Doc(pcID).Delete(ctx)
 	_, err = c.fs.Collection("wake").Doc(pcID).Delete(ctx)
 	return err
 }

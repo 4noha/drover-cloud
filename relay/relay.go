@@ -31,6 +31,15 @@ type Server struct {
 	// 直接呼ぶため対象外（無影響）。nil なら従来どおり無認証（テスト/
 	// Firestore 無し構成）。本番は state.CheckRelayGrant を注入。
 	Grant func(ctx context.Context, sid, role string) bool
+
+	// SlaveGate は slave（共用 PC）認可の seam（既定 nil＝今日の挙動）。
+	// /session で **Authorization: Bearer ヘッダが在る時のみ** 参照される。
+	//   handled=false … slave トークン無し ⇒ 既存 Grant 経路へフォール
+	//                    スルー（master/owner path＝byte-identical）。
+	//   handled=true  … slave トークン提示 ⇒ allow が 101/200 か 403 を
+	//                    決め、effKey が Accept する pairing key（slave は
+	//                    pc 名前空間付き＝source-hijack を構造的に防ぐ）。
+	SlaveGate func(r *http.Request, sid, role string) (handled bool, allow bool, effKey string)
 }
 
 type sess struct {
@@ -50,6 +59,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if sid == "" || (role != "source" && role != "viewer") {
 		http.Error(w, "sid と role(source|viewer) が必要", http.StatusBadRequest)
 		return
+	}
+	// slave（共用 PC）認可 seam: Authorization: Bearer が在る時のみ発火。
+	// handled=false（ヘッダ無し）なら下の Grant 経路へ抜ける＝master path
+	// は byte-identical。handled=true なら allow が 403 か Accept を決める。
+	if s.SlaveGate != nil {
+		if handled, allow, effKey := s.SlaveGate(r, sid, role); handled {
+			if !allow {
+				http.Error(w, "未認可（slave scope 外）", http.StatusForbidden)
+				return
+			}
+			// effKey = pc 名前空間付きキー。role は gate が source を保証。
+			s.Accept(w, r, effKey, role)
+			return
+		}
 	}
 	// 公開 /session の認可: Firestore グラント（SA を持つ正規接続元のみ
 	// 書ける短命許可）を検証。Web /ws は Accept 直叩きで通らない。

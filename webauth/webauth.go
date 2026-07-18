@@ -35,6 +35,17 @@ func GenCode() (string, error) {
 	return string(out), nil
 }
 
+// GenSecret は 32 バイトの暗号乱数を hex（64 文字）で返す。slave（共用 PC）の
+// durable な refresh secret 用（relay が enroll 時に発行し、owner の「端末解除」
+// まで有効。この secret を提示して /slave/token から短命 bearer を取得する）。
+func GenSecret() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // NormalizeCode は入力ゆれ（小文字・空白・ハイフン）を吸収する。
 func NormalizeCode(s string) string {
 	s = strings.ToUpper(strings.TrimSpace(s))

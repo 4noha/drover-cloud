@@ -17,14 +17,18 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // セッション状態（source PC が PushStatus で upsert・ブラウザは
-    // onSnapshot で更新 push を受けるのみ）
+    // onSnapshot で更新 push を受けるのみ）。read は cm-owner のみ。
+    // slave:<pc> は自分の pcs/{pc} 配下だけ write 可（多層防御・主防御は
+    // relay の /slave/* 代行。slave の read は許可しない＝どのルールにも
+    // 一致せず deny＝オーナーのセッションを見られない）。
     match /pcs/{pc}/{document=**} {
       allow read: if request.auth != null && request.auth.uid == "cm-owner";
-      allow write: if false;
+      allow write: if request.auth != null
+                   && request.auth.uid == "slave:" + pc;
     }
 
-    // wake / pairings / commands 等その他は全てクライアント不可
-    // （サーバ SDK 専用）
+    // wake / pairings / commands / relaygrants / slaves 等その他は全て
+    // クライアント不可（サーバ SDK 専用）
     match /{document=**} {
       allow read, write: if false;
     }

@@ -46,6 +46,9 @@ func handler() http.Handler {
 					enrollSA = string(b)
 				}
 			}
+			// slave（共用 PC）認可 seam。enrollSA=="" なら常に handled=false
+			// ＝slave 機能 off で master path 無改変（NewSlaveGate 内で guard）。
+			rl.SlaveGate = web.NewSlaveGate(enrollSA, st)
 			ws := web.New(rl, st, webauth.NewSigner(key),
 				clientID, allowed, nil, proj, enrollSA)
 			// Firestore 更新 push（任意）: Firebase Web config（公開

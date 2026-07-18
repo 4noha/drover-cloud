@@ -242,6 +242,31 @@ function setupAdd() {
       btn.disabled = false;
     }
   };
+  // 共用 PC（slave）: SA 鍵を配布しない enroll コードを発行。
+  const sbtn = $("addbtn-slave");
+  if (sbtn) sbtn.onclick = async () => {
+    sbtn.disabled = true;
+    try {
+      const r = await fetch("/api/enroll?role=slave", {
+        method: "POST", headers: { Accept: "application/json" },
+      });
+      if (!r.ok) throw new Error("発行失敗 " + r.status);
+      const j = await r.json();
+      out.style.display = "block";
+      out.textContent =
+        "共用 PC で herdr-drover を用意し、以下を実行してください" +
+        "（" + (j.expires_in || "15m") + "・一回限り）:\n\n" +
+        j.command +
+        "\n\n※ この PC には SA 鍵は配布されません＝この PC はオーナーの" +
+        "セッションを見られません（オーナーが Web から操作するだけ）。\n" +
+        "完了後その PC で `herdr-drover agent` を起動するとこの一覧に表示されます。";
+    } catch (e) {
+      out.style.display = "block";
+      out.textContent = "エラー: " + e.message;
+    } finally {
+      sbtn.disabled = false;
+    }
+  };
 }
 
 main();

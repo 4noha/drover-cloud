@@ -119,6 +119,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/enroll", s.apiGuard(s.apiEnroll))      // 端末追加コード発行
 	mux.HandleFunc("/enroll", s.enroll)                         // 新 PC が code 交換
 	mux.HandleFunc("/ws", s.wsViewer)
+	// slave（共用 PC）relay 代行エンドポイント。/slave/token のみ refresh
+	// secret ゲート、他は slaveGuard（RS256 bearer）。enrollSA 未設定なら
+	// 各々 fail-closed（404/401）＝slave 機能 off で従来構成は無影響。
+	mux.HandleFunc("/slave/token", s.slaveToken)
+	mux.HandleFunc("/slave/register", s.slaveGuard(s.slaveRegister))
+	mux.HandleFunc("/slave/push", s.slaveGuard(s.slavePush))
+	mux.HandleFunc("/slave/delete", s.slaveGuard(s.slaveDelete))
+	mux.HandleFunc("/slave/sessions", s.slaveGuard(s.slaveSessions))
+	mux.HandleFunc("/slave/wake", s.slaveGuard(s.slaveWake))
+	mux.HandleFunc("/slave/grant", s.slaveGuard(s.slaveGrant))
+	mux.HandleFunc("/slave/revoked", s.slaveGuard(s.slaveRevoked))
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 	return mux
@@ -401,6 +412,7 @@ func (s *Server) apiCommands(w http.ResponseWriter, r *http.Request, t webauth.T
 // enroll コードを発行（cookie 必須＝アカウント所有者のみ）。新 PC で
 // 表示コマンドを実行すると enroll で交換される。
 func (s *Server) apiEnroll(w http.ResponseWriter, r *http.Request, t webauth.Token) {
+	role := r.URL.Query().Get("role") // ""/"master" ⇒ 既存挙動、"slave" ⇒ 共用 PC
 	code, err := webauth.GenCode()
 	if err != nil {
 		http.Error(w, `{"error":"gen"}`, http.StatusInternalServerError)
@@ -408,14 +420,19 @@ func (s *Server) apiEnroll(w http.ResponseWriter, r *http.Request, t webauth.Tok
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	// scope="enroll" として 15 分・一回消費（pairing プリミティブ再利用）
+	// scope="enroll"（slave は "enroll-slave"）として 15 分・一回消費。
+	scope, extra := "enroll", ""
+	if role == "slave" {
+		scope, extra = "enroll-slave", " --slave"
+	}
 	if err := s.st.CreatePairing(ctx, webauth.HashCode(code),
-		"", "enroll", 15*time.Minute); err != nil {
+		"", scope, 15*time.Minute); err != nil {
 		http.Error(w, `{"error":"store"}`, http.StatusInternalServerError)
 		return
 	}
 	host := relayWSS(r)
-	cmd := "herdr-drover enroll " + code + " --relay " + host +
+	// extra=="" のとき master のコマンド文字列は従来と byte 同一。
+	cmd := "herdr-drover enroll " + code + " --relay " + host + extra +
 		"\n  # claude-master の場合: claude-master cloud enroll " + code + " --relay " + host
 	json.NewEncoder(w).Encode(map[string]any{
 		"code": code, "command": cmd, "expires_in": "15m",
@@ -450,10 +467,49 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "enroll 処理エラー", http.StatusInternalServerError)
 		return
 	}
-	if !ok || scope != "enroll" {
+	if !ok || (scope != "enroll" && scope != "enroll-slave") {
 		http.Error(w, "コードが無効か期限切れです", http.StatusUnauthorized)
 		return
 	}
+	if scope == "enroll-slave" {
+		// slave（共用 PC）: SA 鍵は決して渡さず、durable な refresh secret を
+		// 発行して slaves/{pc} に束縛する。pc は既存 master と衝突不可。
+		pc := r.FormValue("pc")
+		if pc == "" {
+			http.Error(w, "pc が必要", http.StatusBadRequest)
+			return
+		}
+		// pc 名は英数字/._- のみ（`:`/NUL 拒否）。slaveGrantDocID の別名
+		// 衝突を入口で断つ＝これを通った pc しか token 化されない。
+		if !state.ValidPCName(pc) {
+			http.Error(w, "pc 名が不正です（英数字と ._- のみ）", http.StatusBadRequest)
+			return
+		}
+		secret, gerr := webauth.GenSecret()
+		if gerr != nil {
+			http.Error(w, "secret 生成失敗", http.StatusInternalServerError)
+			return
+		}
+		okBind, berr := s.st.BindSlave(ctx, pc, sha256Hex(secret))
+		if berr != nil {
+			http.Error(w, "bind 失敗", http.StatusInternalServerError)
+			return
+		}
+		if !okBind {
+			http.Error(w, "この pc 名は既存の端末と衝突します（master を先に登録してください）",
+				http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"role": "slave", "pc": pc,
+			"gcp_project":  s.gcpProject,
+			"relay_url":    relayWSS(r),
+			"slave_secret": secret, // sa_json は決して含めない
+		})
+		return
+	}
+	// scope == "enroll"（master）: 既存応答 byte-identical。
 	resp := map[string]any{
 		"gcp_project": s.gcpProject,
 		"relay_url":   relayWSS(r),
@@ -485,7 +541,13 @@ func (s *Server) wsViewer(w http.ResponseWriter, r *http.Request) {
 	// 相手 PC の agent を起こす（M6 と同じ wake 制御線）
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	_ = s.st.Wake(ctx, pc, sid)
+	// 対象が slave PC なら slave source と同じ pc 名前空間キーで Accept
+	// （source-hijack 防止・§2.10）。master PC は raw sid＝byte-identical。
+	key := sid
+	if role, _ := s.st.PCRole(ctx, pc); role == "slave" {
+		key = slaveSessionKey(pc, sid)
+	}
 	cancel()
 	// 既存 relay の viewer として中継（relay/protocol 無改変）
-	s.rl.Accept(w, r, sid, "viewer")
+	s.rl.Accept(w, r, key, "viewer")
 }
