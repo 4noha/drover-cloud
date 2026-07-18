@@ -26,6 +26,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/url"
 	"sync/atomic"
 	"time"
 
@@ -38,7 +39,12 @@ import (
 // conn の寿命は ctx に束縛される（cancel で read/write が死ぬ）＝呼び出し側
 // は接続生存期間の ctx を渡すこと。
 func Dial(ctx context.Context, baseURL, sid, role string) (net.Conn, error) {
-	u := baseURL + "/session?sid=" + sid + "&role=" + role
+	// sid は URL エスケープする。relay 側は Query().Get で自動デコードするので
+	// 既存の `:` 含む pane_id（w1:p2 → w1%3Ap2 → デコードで w1:p2）は透過的に
+	// 同一だが、リモート pane 注入の派生 sid `<sid>#inj` の `#` は URL の
+	// フラグメント区切りとして解釈され role が届かず relay が 400 を返す（実障害で
+	// 確認）。エスケープでフラグメント化を防ぐ。role は source/viewer 固定＝安全。
+	u := baseURL + "/session?sid=" + url.QueryEscape(sid) + "&role=" + role
 	c, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{})
 	if err != nil {
 		return nil, err
