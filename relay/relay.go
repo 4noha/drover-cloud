@@ -40,6 +40,15 @@ type Server struct {
 	//                    決め、effKey が Accept する pairing key（slave は
 	//                    pc 名前空間付き＝source-hijack を構造的に防ぐ）。
 	SlaveGate func(r *http.Request, sid, role string) (handled bool, allow bool, effKey string)
+
+	// KeyFor は master path（SlaveGate 非該当＝bearer 無し）の Accept 前に
+	// pairing key を解決する seam（既定 nil＝raw sid＝byte-identical）。
+	// リモート pane 注入の viewer が source PC を `spc` で渡した時、その PC が
+	// slave なら slaveSessionKey(spc,sid) を返し、slave source（同じ pc 名前空間
+	// キー）とペアさせる（wsViewer と同一ロジックを注入経路にも適用）。spc 無し・
+	// master source PC・source role は sid をそのまま返す。Grant 認可の**後**に
+	// 呼ばれる（key を変えても認可根拠は raw sid のまま）。
+	KeyFor func(r *http.Request, sid, role string) string
 }
 
 type sess struct {
@@ -80,7 +89,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "未認可（grant 無効）", http.StatusForbidden)
 		return
 	}
-	s.Accept(w, r, sid, role)
+	// pairing key 解決（既定 raw sid＝byte-identical。注入 viewer が slave
+	// source pc を spc で渡した時のみ pc 名前空間キーへ）。認可は上の Grant で
+	// raw sid に対して済んでいる。
+	key := sid
+	if s.KeyFor != nil {
+		key = s.KeyFor(r, sid, role)
+	}
+	s.Accept(w, r, key, role)
 }
 
 // Accept は WS をアップグレードして sid/role でペアリング中継する

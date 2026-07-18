@@ -229,6 +229,18 @@ func TestSlaveEndpointsE2E(t *testing.T) {
 		map[string]any{"sid": "not-mine", "ttl_seconds": 60}); code != 403 {
 		t.Fatalf("未所有 sid の grant が %d（403 のはず）", code)
 	}
+	// #inj（注入の派生 sid）は base sid の所有権で通す（d1）。full sid で grant。
+	if code, _ := req(t, "POST", ts.URL+"/slave/grant", tok,
+		map[string]any{"sid": "sidA#inj", "ttl_seconds": 60}); code != 200 {
+		t.Fatalf("自 sid の #inj grant が %d（base 所有で 200 のはず）", code)
+	}
+	if !st.SlaveGrantValid(ctx, pc, "sidA#inj") {
+		t.Fatal("#inj grant が full sid で pc 名前空間に書かれていない")
+	}
+	if code, _ := req(t, "POST", ts.URL+"/slave/grant", tok,
+		map[string]any{"sid": "not-mine#inj", "ttl_seconds": 60}); code != 403 {
+		t.Fatalf("未所有 #inj の grant が %d（403 のはず）", code)
+	}
 
 	// --- /slave/wake（catch-up 200 と timeout 204） ---
 	_ = st.Wake(ctx, pc, "sidA")
@@ -384,6 +396,77 @@ func TestSlaveSessionAdversarialE2E(t *testing.T) {
 		t.Fatalf("bearer 無し master source が 403（invariant 破れ）: %v", err)
 	}
 	mc.Close()
+}
+
+// TestSlaveInjectionPairing は d1: 注入 viewer（bearer 無し・spc=slave PC）が
+// relay.KeyFor で pc 名前空間キーへ落ち、slave source の #inj（base 所有権で
+// 認可）とペアして owner が slave セッションを ↗窓 として見られることを実証。
+func TestSlaveInjectionPairing(t *testing.T) {
+	needEmu(t)
+	sa, _ := testSAJSON(t)
+	st := newState(t)
+	rl := relay.NewServer()
+	rl.Grant = st.CheckRelayGrant
+	rl.SlaveGate = NewSlaveGate(sa, st)
+	rl.KeyFor = NewViewerKey(st) // 注入 viewer の名前空間解決
+	ws := New(rl, st, webauth.NewSigner("k"), "cid", allowEmail, fakeGV{}, emuProject, sa)
+	mux := http.NewServeMux()
+	mux.Handle("/session", rl)
+	mux.Handle("/", ws.Handler())
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	wsBase := "ws" + strings.TrimPrefix(ts.URL, "http")
+	ctx := context.Background()
+
+	const pc = "pcinj-herdr"
+	const S = "w1:p2"
+	injS := S + "#inj"
+	if _, err := st.BindSlave(ctx, pc, sha256Hex("sek")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RegisterSlavePCVersion(ctx, pc, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PushStatusFor(ctx, pc, []map[string]any{sessionMap(S, 1.0, true)}); err != nil {
+		t.Fatal(err)
+	}
+	// slave が #inj を grant 済み（/slave/grant が base 所有権で書いた状態）。
+	if err := st.PutSlaveGrant(ctx, pc, injS, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	// 注入 viewer 用の grant（attach client が書く）。
+	if err := st.PutRelayGrant(ctx, injS, "viewer", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := mintSlaveToken([]byte(sa), pc, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// slave source for #inj（bearer）⇒ SlaveGate が slaveSessionKey(pc,injS) で Accept。
+	sh := http.Header{}
+	sh.Set("Authorization", "Bearer "+tok)
+	src, err := wsDial(ctx, wsBase+"/session?sid="+url.QueryEscape(injS)+"&role=source", sh)
+	if err != nil {
+		t.Fatalf("slave source(#inj) が 403: %v", err)
+	}
+	defer src.Close()
+
+	// 注入 viewer: bearer 無し・spc=pc（master path）⇒ KeyFor が slaveSessionKey(pc,injS) へ。
+	inj, err := wsDial(ctx, wsBase+"/session?sid="+url.QueryEscape(injS)+"&role=viewer&spc="+url.QueryEscape(pc), http.Header{})
+	if err != nil {
+		t.Fatalf("注入 viewer(spc) が失敗: %v", err)
+	}
+	defer inj.Close()
+
+	time.Sleep(300 * time.Millisecond)
+	go src.Write([]byte("INJ_OK"))
+	buf := make([]byte, 32)
+	_ = inj.SetReadDeadline(time.Now().Add(4 * time.Second))
+	n, rerr := inj.Read(buf)
+	if rerr != nil || string(buf[:n]) != "INJ_OK" {
+		t.Fatalf("注入 viewer(spc) が slave source とペアしない: n=%d err=%v got=%q", n, rerr, buf[:n])
+	}
 }
 
 // TestSlaveSourceHijackIsolation は §2.10: slave source が pc 名前空間キーへ

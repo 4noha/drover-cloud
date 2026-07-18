@@ -11,6 +11,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/4noha/drover-cloud/state"
@@ -18,6 +19,11 @@ import (
 
 // slaveWakeHold は /slave/wake の long-poll 保持時間（テストで短縮可能）。
 var slaveWakeHold = 25 * time.Second
+
+// injSuffix はリモート pane 注入の派生 sid 接尾辞（`<sid>#inj`）。slave は
+// この接尾辞を剥がした base sid の所有権で #inj を配信できる（自 session を
+// 注入経路にも出す＝相手 webterm の 403 respawn を根治）。
+const injSuffix = "#inj"
 
 // slaveGuard は RS256 bearer 必須ラッパ（apiGuard の slave 版）。enrollSA
 // 未設定なら fail-closed 404。検証済 pc を handler へ渡す。失効（revoked/{pc}
@@ -80,6 +86,31 @@ func NewSlaveGate(enrollSA string, st *state.Client) func(r *http.Request, sid, 
 			return true, false, ""
 		}
 		return true, true, slaveSessionKey(pc, sid)
+	}
+}
+
+// NewViewerKey は relay.KeyFor へ注入する seam。master path（bearer 無し）の
+// **viewer** に、リモート pane 注入の source PC(`spc`)が slave の時だけ
+// slaveSessionKey(spc,sid) を返し、slave source（同じ pc 名前空間キー）と
+// ペアさせる（wsViewer と同一ロジックを注入経路へ）。spc 未指定・master
+// source PC・source role は raw sid＝master path byte-identical。認可は relay の
+// Grant(raw sid,viewer) が既に済（key 変更は pairing スロット選択のみ）。slave
+// トークンが viewer になれない不変条件は SlaveGate（bearer 経路）が別途保証。
+func NewViewerKey(st *state.Client) func(r *http.Request, sid, role string) string {
+	return func(r *http.Request, sid, role string) string {
+		if role != "viewer" {
+			return sid
+		}
+		spc := r.URL.Query().Get("spc")
+		if spc == "" {
+			return sid
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if pr, _ := st.PCRole(ctx, spc); pr == "slave" {
+			return slaveSessionKey(spc, sid)
+		}
+		return sid
 	}
 }
 
@@ -266,7 +297,10 @@ func (s *Server) slaveGrant(w http.ResponseWriter, r *http.Request, pc string) {
 		return
 	}
 	ctx := r.Context()
-	if !s.st.SessionOwnedBy(ctx, pc, body.SID) {
+	// #inj（注入の派生 sid）は base sid の所有権で判定＝slave が自 session を
+	// 注入経路にも配信できる。grant は full sid（…#inj）で書く（SlaveGate が
+	// full sid で SlaveGrantValid を引き slaveSessionKey(pc,full sid) でペア）。
+	if !s.st.SessionOwnedBy(ctx, pc, strings.TrimSuffix(body.SID, injSuffix)) {
 		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}

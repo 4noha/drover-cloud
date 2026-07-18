@@ -57,6 +57,23 @@ func DialSource(ctx context.Context, baseURL, sid string) (net.Conn, error) {
 	return Dial(ctx, baseURL, sid, "source")
 }
 
+// DialViewerFrom は viewer 役で dial し、source PC を `spc` パラメータで relay へ
+// 渡す（リモート pane 注入の viewer 用）。relay の KeyFor が spc==slave PC の
+// 時だけ pc 名前空間キーで viewer を Accept し slave source とペアさせる。
+// sourcePC が空 or master PC なら relay は spc を無視＝Dial(role=viewer) と
+// **同一 wire**（master→master 注入は byte-identical）。
+func DialViewerFrom(ctx context.Context, baseURL, sid, sourcePC string) (net.Conn, error) {
+	u := baseURL + "/session?sid=" + url.QueryEscape(sid) + "&role=viewer"
+	if sourcePC != "" {
+		u += "&spc=" + url.QueryEscape(sourcePC)
+	}
+	c, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return websocket.NetConn(ctx, c, websocket.MessageBinary), nil
+}
+
 // BridgeSourceIdle は relay へ source として dial し、local と双方向ポンプ
 // する。idle 秒 無通信（両方向とも）でデータ線を閉じて戻る（quiescence
 // 切断＝次の wake まで解放）。cm relay.BridgeSourceIdle の適応コピー

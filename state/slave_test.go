@@ -51,19 +51,17 @@ func TestSlavePushStatusForIsolatedAndGated(t *testing.T) {
 	}
 }
 
-// slave（role=slave）は #inj を配信できない＝注入すると相手 webterm が
-// 403 respawn ループになるので、注入候補 DroverPCs から除外される。
-// master（role 無し）は含まれる（旧コードは slave も含み 403 loop の元だった）。
-func TestDroverPCsExcludesSlave(t *testing.T) {
+// DroverPCs は master も slave も含む（どちらも agent_kind=herdr-drover）。
+// slave の #inj 配信は relay の /slave/grant（base sid 所有権）＋KeyFor
+// （spc 名前空間）で通すので、slave も ↗窓 注入候補に含める。
+func TestDroverPCsIncludesMasterAndSlave(t *testing.T) {
 	ctx := context.Background()
 	c := newClient(t, "relay")
 	const master = "dmaster-herdr"
 	const slave = "dslave-herdr"
-	// master: PushStatusFor が agent_kind=herdr-drover を書く（role 無し）。
 	if _, err := c.PushStatusFor(ctx, master, []map[string]any{realSession("m1", 1.0, true)}); err != nil {
 		t.Fatal(err)
 	}
-	// slave: RegisterSlavePCVersion が agent_kind=herdr-drover＋role=slave。
 	if err := c.RegisterSlavePCVersion(ctx, slave, "v1"); err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +79,10 @@ func TestDroverPCsExcludesSlave(t *testing.T) {
 		}
 	}
 	if !hasMaster {
-		t.Fatalf("master が DroverPCs に居ない（role 無しは注入候補のはず）: %v", pcs)
+		t.Fatalf("master が DroverPCs に居ない: %v", pcs)
 	}
-	if hasSlave {
-		t.Fatalf("slave が DroverPCs に含まれている（除外されるべき＝#inj 403 loop の元）: %v", pcs)
+	if !hasSlave {
+		t.Fatalf("slave が DroverPCs に居ない（注入候補に含めるべき）: %v", pcs)
 	}
 }
 

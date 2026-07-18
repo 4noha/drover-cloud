@@ -210,13 +210,11 @@ func (c *Client) RegisterPCVersion(ctx context.Context, agentVersion string) err
 // DroverPCs は agent_kind=="herdr-drover" の PC id 一覧（リモート pane 注入の
 // 候補＝#inj に応答できる drover agent のみ）。cm agent の pc（agent_kind 無し）や
 // 旧版で未マーカーの pc は含めない＝blank pane を作らない。ListPCs の drover 版。
-// **role=="slave" は除外**: 共用 PC(slave) は自 session の派生 sid `<sid>#inj`
-// を所有せず SlaveGate が source を 403 にする＝注入すると相手側 webterm が
-// 403 respawn ループになる。発生源（注入候補）から外して断つ（slave の session
-// は端末一覧・Web ターミナルには従来どおり出る＝on-demand 閲覧可）。
-// role は絞り込みクエリ（`!=`）だと role 未設定の master doc まで除外して
-// しまう（Firestore の != は欠損フィールドも除外）ため、取得済み doc を
-// コード側で判定する（追加 read なし）。
+// **slave も含める**: relay が /slave/grant で `#inj` を base sid の所有権で
+// 認可し（web/slave.go）、注入 viewer は spc→slaveSessionKey で slave source と
+// ペアする（relay.KeyFor）。これにより共用 PC(slave) の session も master の
+// herdr へ ↗窓 として注入できる（v0.1.3 で一時的に slave を除外していたが、
+// 注入経路を通す方針に変更＝除外を撤回）。
 func (c *Client) DroverPCs(ctx context.Context) ([]string, error) {
 	docs, err := c.fs.Collection("pcs").
 		Where("agent_kind", "==", "herdr-drover").Documents(ctx).GetAll()
@@ -225,9 +223,6 @@ func (c *Client) DroverPCs(ctx context.Context) ([]string, error) {
 	}
 	out := make([]string, 0, len(docs))
 	for _, d := range docs {
-		if role, _ := d.Data()["role"].(string); role == "slave" {
-			continue // 共用 PC は注入対象外
-		}
 		out = append(out, d.Ref.ID)
 	}
 	return out, nil
