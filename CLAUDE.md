@@ -16,7 +16,7 @@ Cloud Run relay（WSS）＋ Google ログイン Web UI と、その **共有 Go 
   二重に存在していたバイト同一コピーを**一本化**したもの。
 - **cm は凍結（新規投資なし）**。稼働中の Cloud Run relay は cm ビルド由来だが、
   本 repo はその動くコードのコピー＝以後の再デプロイ・機能追加は**本 repo が正典**。
-- consumer: [herdr-drover](../herdr-drover)（`state`/`relayclient`/`selfupdate` を
+- consumer: [herdr-drover](https://github.com/4noha/herdr-drover)（`state`/`relayclient`/`selfupdate` を
   import）。開発中は consumer 側 go.mod の `replace => ../drover-cloud` で解決。
 
 ## パッケージ構成

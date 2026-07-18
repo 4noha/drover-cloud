@@ -2,11 +2,11 @@
 
 このリポジトリの内容だけで、セッション同期クラウド（Firestore ＋ Cloud Run
 relay ＋ Google ログイン Web UI）を GCP に立てられる。立てたら PC 側ツール
-（[herdr-drover](../herdr-drover)）を `enroll` でつなぐ。
+（[herdr-drover](https://github.com/4noha/herdr-drover)）を `enroll` でつなぐ。
 
 > **既にクラウドがある場合**（他 PC が使っている等）は、ここは飛ばして
 > PC 側で「Web『＋ 端末を追加』→ `herdr-drover enroll`」だけでよい
-> （[herdr-drover/SETUP.md](../herdr-drover/SETUP.md)）。サーバは 1 つを全 PC で共有する。
+> （[herdr-drover/SETUP.md](https://github.com/4noha/herdr-drover/blob/main/SETUP.md)）。サーバは 1 つを全 PC で共有する。
 
 ## 前提
 
@@ -105,7 +105,7 @@ gcloud run services update <SERVICE> --project=<PROJECT_ID> --region=<REGION> \
 ### 5. 確認
 
 - `https://<relay>/` を実ブラウザで開く → Google ログイン → 端末一覧
-- PC をつなぐ: [herdr-drover/SETUP.md](../herdr-drover/SETUP.md) の「クラウドに参加」
+- PC をつなぐ: [herdr-drover/SETUP.md](https://github.com/4noha/herdr-drover/blob/main/SETUP.md) の「クラウドに参加」
 
 ## 環境変数リファレンス（Cloud Run に設定するもの）
 
