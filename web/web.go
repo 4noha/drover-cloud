@@ -414,8 +414,9 @@ func (s *Server) apiEnroll(w http.ResponseWriter, r *http.Request, t webauth.Tok
 		http.Error(w, `{"error":"store"}`, http.StatusInternalServerError)
 		return
 	}
-	cmd := "claude-master cloud enroll " + code +
-		" --relay " + relayWSS(r)
+	host := relayWSS(r)
+	cmd := "herdr-drover enroll " + code + " --relay " + host +
+		"\n  # claude-master の場合: claude-master cloud enroll " + code + " --relay " + host
 	json.NewEncoder(w).Encode(map[string]any{
 		"code": code, "command": cmd, "expires_in": "15m",
 	})

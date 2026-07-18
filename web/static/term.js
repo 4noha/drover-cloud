@@ -153,7 +153,7 @@ function run() {
   if (!pc || !sid) { $("stat").textContent = "pc/sid がありません"; return; }
   const label = dir ? (dir + " — " + pc) : (pc + " : " + sid);
   $("title").textContent = label;
-  document.title = (dir || sid) + " — claude-master";
+  document.title = (dir || sid) + " — drover-cloud";
 
   setupSwitch();
 

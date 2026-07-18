@@ -121,7 +121,7 @@ async function main() {
         return b;
       };
       ops.appendChild(mkOp("再起動", "restart-agent",
-        "claude-master の launchd 2 デーモンを再起動します（数秒の同期断）。"));
+        "herdr-drover / claude-master の launchd デーモンを再起動します（数秒の同期断）。"));
       ops.appendChild(mkOp("更新", "self-update",
         "最新 Release へ自己更新し再起動します（古い場合のみ）。"));
       const hist = el("button", { className: "diag-btn" }, "履歴");
@@ -229,10 +229,11 @@ function setupAdd() {
       const j = await r.json();
       out.style.display = "block";
       out.textContent =
-        "新しい PC で claude-master を用意し、以下を実行してください" +
+        "新しい PC で herdr-drover（または claude-master）を用意し、以下を実行してください" +
         "（" + (j.expires_in || "15m") + "・一回限り）:\n\n" +
         j.command +
-        "\n\n完了後その PC で `claude-master cloud agent` を起動すると" +
+        "\n\n完了後その PC で `herdr-drover install` / `herdr-drover agent`" +
+        "（claude-master は `claude-master cloud agent`）を起動すると" +
         "この一覧に表示されます。";
     } catch (e) {
       out.style.display = "block";

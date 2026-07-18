@@ -10,10 +10,10 @@ package web
 // loginHTMLTmpl は Google Sign-In（GIS）。%s に OAuth Web Client ID。
 // GIS が credential(IDトークン)＋g_csrf_token を /auth/google へ POST。
 const loginHTMLTmpl = `<!doctype html><html lang="ja"><meta charset="utf-8">
-<title>claude-master — ログイン</title>
+<title>drover-cloud — ログイン</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <body style="font-family:system-ui;max-width:420px;margin:16vh auto;padding:0 16px;text-align:center">
-<h1 style="font-size:20px">claude-master</h1>
+<h1 style="font-size:20px">drover-cloud</h1>
 <p style="color:#666;font-size:14px">Google アカウントでログインしてください。</p>
 <script src="https://accounts.google.com/gsi/client" async></script>
 <div id="g_id_onload"
@@ -29,7 +29,7 @@ const loginHTMLTmpl = `<!doctype html><html lang="ja"><meta charset="utf-8">
 // devicesHTML: アカウントに接続されている端末一覧＋Web ターミナルへの
 // リンク。Webインターフェース（/term）はこのページから開く。
 const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
-<title>claude-master — 端末一覧</title>
+<title>drover-cloud — 端末一覧</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
  body{font-family:system-ui;margin:0;background:#0d0d0f;color:#e6e6e6}
@@ -63,7 +63,7 @@ const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  #stat{color:#9aa;font-size:13px}
 </style>
 <body>
-<header><b>claude-master</b><span id="stat">読み込み中…</span>
+<header><b>drover-cloud</b><span id="stat">読み込み中…</span>
  <a class="logout" href="/auth/logout">ログアウト</a></header>
 <main>
  <p style="color:#9aa;font-size:13px">アカウントに接続されている端末です。
@@ -81,7 +81,7 @@ const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 
 // termHTML: Web ターミナル本体（/term?pc=&sid=）。/ からリンクで開く。
 const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
-<title>claude-master — ターミナル</title>
+<title>drover-cloud — ターミナル</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/static/xterm.css">
 <style>
