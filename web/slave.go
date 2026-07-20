@@ -265,6 +265,76 @@ func (s *Server) slaveWake(w http.ResponseWriter, r *http.Request, pc string) {
 	}
 }
 
+// slaveCommands は slave が自 pc 宛の遠隔命令を long-poll で取りに来る口
+// （master の state.Client.WatchCommands 相当を relay 越しに提供＝slave は SA レス
+// で Firestore を直読できないため）。slaveWake と同型: catch-up で pending を claim
+// して即返す→無ければ ~25s hold（pending 出現で claim して返す）→timeout で 204。
+// claim（pending→running）は master 経路と同じ規律で二重実行を防ぐ。
+func (s *Server) slaveCommands(w http.ResponseWriter, r *http.Request, pc string) {
+	// 1. catch-up。
+	if cmds, err := s.st.ClaimPendingCommands(r.Context(), pc); err == nil && len(cmds) > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"commands": cmds})
+		return
+	}
+	// 2. ~25s watch（pending 出現 → claim して返す）。
+	ctx, cancel := context.WithTimeout(r.Context(), slaveWakeHold)
+	defer cancel()
+	fired := make(chan struct{}, 1)
+	go func() {
+		_ = s.st.WatchPendingCommands(ctx, pc, func() {
+			select {
+			case fired <- struct{}{}:
+			default:
+			}
+		})
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case <-fired:
+			// mid-hold 失効 ⇒ 403（wake と同じ）。
+			if s.st.IsRevoked(r.Context(), pc) || s.st.SlaveRevoked(r.Context(), pc) {
+				http.Error(w, `{"error":"revoked"}`, http.StatusForbidden)
+				return
+			}
+			if cmds, err := s.st.ClaimPendingCommands(r.Context(), pc); err == nil && len(cmds) > 0 {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"commands": cmds})
+				return
+			}
+			// 別の poll に取られた等で claim 0 ⇒ 継続待ち。
+		}
+	}
+}
+
+// slaveAckCommand は slave が命令の実行結果（done|error）を書き戻す口
+// （master の AckCommand 相当を relay 越しに）。slaveGuard が pc を刻印するので
+// slave は自 pc の commands/{pc}/q しか触れない。
+func (s *Server) slaveAckCommand(w http.ResponseWriter, r *http.Request, pc string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+		return
+	}
+	if err := s.st.AckCommandFor(r.Context(), pc, body.ID, body.Status, body.Detail); err != nil {
+		http.Error(w, `{"error":"ack failed"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
 // wakeNewer は wake の ts が since より新しいか（RFC3339Nano は幅可変で
 // 文字列比較が単調でないため time で比較）。since 空＝初回は「有れば新しい」。
 func wakeNewer(ts, since string) bool {

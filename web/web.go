@@ -130,6 +130,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/slave/wake", s.slaveGuard(s.slaveWake))
 	mux.HandleFunc("/slave/grant", s.slaveGuard(s.slaveGrant))
 	mux.HandleFunc("/slave/revoked", s.slaveGuard(s.slaveRevoked))
+	mux.HandleFunc("/slave/commands", s.slaveGuard(s.slaveCommands))
+	mux.HandleFunc("/slave/command-ack", s.slaveGuard(s.slaveAckCommand))
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 	return mux

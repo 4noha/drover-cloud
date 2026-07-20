@@ -138,3 +138,87 @@ func (c *Client) RecentCommands(ctx context.Context, pc string, n int) ([]Comman
 	}
 	return out, nil
 }
+
+// ── pc 明示版（relay が slave pc の代理でコマンドを扱う用。master 経路の
+// WatchCommands/AckCommand（自 pcID 直読）は無改変。slave は SA レスなので
+// Firestore に触れず、relay がこれらで仲介する＝wake の WatchWakeFor/PutRelayGrant
+// と同じ additive パターン）。
+
+// claimCommandFor は pc 明示版 claim（pending→running を transaction で 1 度だけ）。
+func (c *Client) claimCommandFor(ctx context.Context, pc, id string) bool {
+	ref := c.cmdCol(pc).Doc(id)
+	err := c.fs.RunTransaction(ctx,
+		func(ctx context.Context, tx *firestore.Transaction) error {
+			snap, err := tx.Get(ref)
+			if err != nil {
+				return err
+			}
+			if st, _ := snap.Data()["status"].(string); st != "pending" {
+				return errAlreadyClaimed
+			}
+			return tx.Set(ref, map[string]any{"status": "running"},
+				firestore.MergeAll)
+		})
+	return err == nil
+}
+
+// ClaimPendingCommands は commands/{pc}/q の pending を全て claim（pending→running）
+// して返す（relay の /slave/commands が一発クエリで拾う用）。claim 済みのみ返す＝
+// 二重配信しない（master の WatchCommands と同じ claim 規律）。
+func (c *Client) ClaimPendingCommands(ctx context.Context, pc string) ([]Command, error) {
+	docs, err := c.cmdCol(pc).Where("status", "==", "pending").Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Command, 0, len(docs))
+	for _, d := range docs {
+		var cm Command
+		if d.DataTo(&cm) != nil || cm.Status != "pending" {
+			continue
+		}
+		if !c.claimCommandFor(ctx, pc, cm.ID) {
+			continue
+		}
+		cm.Status = "running"
+		out = append(out, cm)
+	}
+	return out, nil
+}
+
+// WatchPendingCommands は commands/{pc}/q に pending が現れたら notify を呼ぶ
+// （**claim はしない**＝relay の long-poll hold 用。claim は handler が
+// ClaimPendingCommands で行い、claim と配信を原子的に一致させる）。
+func (c *Client) WatchPendingCommands(ctx context.Context, pc string, notify func()) error {
+	return keepSubscribed(ctx, func() (func() error, func()) {
+		it := c.cmdCol(pc).Where("status", "==", "pending").Snapshots(ctx)
+		pump := func() error {
+			for {
+				qs, err := it.Next()
+				if err != nil {
+					return err
+				}
+				if qs == nil {
+					continue
+				}
+				for _, ch := range qs.Changes {
+					if ch.Kind == firestore.DocumentRemoved {
+						continue
+					}
+					if st, _ := ch.Doc.Data()["status"].(string); st == "pending" {
+						notify()
+					}
+				}
+			}
+		}
+		return pump, func() { it.Stop() }
+	})
+}
+
+// AckCommandFor は pc 明示版 Ack（relay が slave の実行結果を書き戻す用）。
+func (c *Client) AckCommandFor(ctx context.Context, pc, id, status, detail string) error {
+	_, err := c.cmdCol(pc).Doc(id).Set(ctx, map[string]any{
+		"status": status, "detail": detail,
+		"finished_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}, firestore.MergeAll)
+	return err
+}

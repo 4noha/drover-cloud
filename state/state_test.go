@@ -317,6 +317,43 @@ func TestCommandChannelClaimOnceAndAudit(t *testing.T) {
 	}
 }
 
+// TestCommandChannelPcExplicitForSlave は relay 用の pc 明示メソッド
+// （ClaimPendingCommands / AckCommandFor）が、**自 pcID とは別の slave pc** の
+// commands/{slavePc}/q を claim/ack できることを検証する（slave 遠隔命令の relay 仲介。
+// slave は SA レスで Firestore を直読できないため relay が代理する経路）。
+func TestCommandChannelPcExplicitForSlave(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := newClient(t, "relay-node") // relay 役: 自 pcID は "relay-node"、扱うのは別 pc
+	const slavePc = "slave-pc"
+
+	id, err := c.PushCommand(ctx, slavePc, "self-update", "", "owner@example.com")
+	if err != nil || id == "" {
+		t.Fatalf("PushCommand: id=%q err=%v", id, err)
+	}
+	// 1 回目: pending を claim（pending→running）して返す。
+	cmds, err := c.ClaimPendingCommands(ctx, slavePc)
+	if err != nil {
+		t.Fatalf("ClaimPendingCommands: %v", err)
+	}
+	if len(cmds) != 1 || cmds[0].ID != id || cmds[0].Cmd != "self-update" || cmds[0].Status != "running" {
+		t.Fatalf("claim 結果が想定外: %+v", cmds)
+	}
+	// 2 回目: 既 running＝二重配信しない（master と同じ claim 規律）。
+	cmds2, err := c.ClaimPendingCommands(ctx, slavePc)
+	if err != nil || len(cmds2) != 0 {
+		t.Fatalf("二重 claim（running が再度返る＝二重実行リスク）: n=%d err=%v", len(cmds2), err)
+	}
+	// pc 明示 Ack → 監査書戻し。
+	if err := c.AckCommandFor(ctx, slavePc, id, "done", "updated"); err != nil {
+		t.Fatalf("AckCommandFor: %v", err)
+	}
+	rc, err := c.RecentCommands(ctx, slavePc, 5)
+	if err != nil || len(rc) == 0 || rc[0].Status != "done" || rc[0].Detail != "updated" || rc[0].FinishedAt == "" {
+		t.Fatalf("pc 明示 ack の監査が記録されていない: %+v err=%v", rc, err)
+	}
+}
+
 func TestWatchWakeReceivesRealtimePush(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pc := "pc-wake"
