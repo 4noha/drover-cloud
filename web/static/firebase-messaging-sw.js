@@ -25,9 +25,13 @@ messagingReady.then((messaging) => {
   if (!messaging) return;
   messaging.onBackgroundMessage((payload) => {
     const n = payload.notification || {};
+    // data.tag は「どの PC のどのセッションか」の識別子（notify.go が
+    // pcName+pane key で発行）。同一セッションの連続通知は最新1件に集約、
+    // 別セッションは別々に積む＝通知欄で「どのタスクが終わったか」が潰れない。
+    const tag = (payload.data && payload.data.tag) || "herdr-drover-task";
     self.registration.showNotification(n.title || "herdr-drover", {
       body: n.body || "",
-      tag: "herdr-drover-task", // 連続通知は最新 1 件に集約（通知欄が埋まらない）
+      tag,
     });
   });
 });

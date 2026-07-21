@@ -305,8 +305,9 @@ async function setupPush() {
       // 発火しない仕様＝ここで明示的に受けて OS 通知を出す（tag で最新集約）。
       msgM.onMessage(messaging, (payload) => {
         const n = payload.notification || {};
+        const tag = (payload.data && payload.data.tag) || "herdr-drover-task";
         try {
-          new Notification(n.title || "herdr-drover", { body: n.body || "", tag: "herdr-drover-task" });
+          new Notification(n.title || "herdr-drover", { body: n.body || "", tag });
         } catch (e) { /* 無視: 通知 API 制約下でも購読自体は継続 */ }
       });
       await fetch("/api/push-token", {

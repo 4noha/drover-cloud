@@ -62,27 +62,33 @@ type fcmErrorBody struct {
 }
 
 // Send は 1 トークンへ通知を送る。baseURL は "" なら DefaultBaseURL
-// （テストは httptest.Server の URL を渡す）。戻り値 invalidToken は
-// FCM が UNREGISTERED（トークン失効・アプリ削除済み等）を返した時 true
-// ＝呼び手はこの token を ListPushTokens 管理から削除すべき合図。
-func Send(ctx context.Context, hc *http.Client, baseURL, projectID, token, title, body string) (invalidToken bool, err error) {
+// （テストは httptest.Server の URL を渡す）。tag は "" でなければ
+// message.data.tag として乗せる（SW 側が Notification の tag に使い、
+// 同一セッションの通知は最新1件に集約・別セッションは別々に積む＝
+// 呼び手が「どのタスクが完了したか」を区別する用途。空なら data は省く）。
+// 戻り値 invalidToken は FCM が UNREGISTERED（トークン失効・アプリ削除済み
+// 等）を返した時 true＝呼び手はこの token を ListPushTokens 管理から削除
+// すべき合図。
+func Send(ctx context.Context, hc *http.Client, baseURL, projectID, token, title, body, tag string) (invalidToken bool, err error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
 	if projectID == "" || token == "" {
 		return false, fmt.Errorf("push: projectID/token は必須")
 	}
-	payload := map[string]any{
-		"message": map[string]any{
-			"token": token,
-			"notification": map[string]string{
-				"title": title,
-				"body":  body,
-			},
-			// webpush.fcm_options.link は通知クリックで開く URL。
-			// Web コンソール自体を指す（相対パス不可＝FCM 仕様で絶対 URL 必須）。
+	message := map[string]any{
+		"token": token,
+		"notification": map[string]string{
+			"title": title,
+			"body":  body,
 		},
+		// webpush.fcm_options.link は通知クリックで開く URL。
+		// Web コンソール自体を指す（相対パス不可＝FCM 仕様で絶対 URL 必須）。
 	}
+	if tag != "" {
+		message["data"] = map[string]string{"tag": tag}
+	}
+	payload := map[string]any{"message": message}
 	buf, err := json.Marshal(payload)
 	if err != nil {
 		return false, fmt.Errorf("push: payload marshal: %w", err)

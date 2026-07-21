@@ -27,7 +27,7 @@ func TestSendSuccess(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	invalid, err := Send(context.Background(), ts.Client(), ts.URL, "demo-proj", "tok-abc", "タスク完了", "herdr-drover")
+	invalid, err := Send(context.Background(), ts.Client(), ts.URL, "demo-proj", "tok-abc", "タスク完了", "herdr-drover", "pc1:w1:pW")
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -41,6 +41,29 @@ func TestSendSuccess(t *testing.T) {
 	notif, _ := msg["notification"].(map[string]any)
 	if notif["title"] != "タスク完了" || notif["body"] != "herdr-drover" {
 		t.Fatalf("notification payload 不一致: %+v", notif)
+	}
+	data, _ := msg["data"].(map[string]any)
+	if data["tag"] != "pc1:w1:pW" {
+		t.Fatalf("data.tag 不一致（SW の通知集約キーに使う）: %+v", msg["data"])
+	}
+}
+
+// tag が空文字なら message.data 自体を省く（余分なフィールドを送らない）。
+func TestSendWithoutTagOmitsData(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"name": "ok"})
+	}))
+	defer ts.Close()
+
+	if _, err := Send(context.Background(), ts.Client(), ts.URL, "demo-proj", "tok", "t", "b", ""); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	msg, _ := gotBody["message"].(map[string]any)
+	if _, ok := msg["data"]; ok {
+		t.Fatalf("tag 空なのに data が送られている: %+v", msg)
 	}
 }
 
@@ -58,7 +81,7 @@ func TestSendUnregisteredToken(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	invalid, err := Send(context.Background(), ts.Client(), ts.URL, "demo-proj", "stale-tok", "t", "b")
+	invalid, err := Send(context.Background(), ts.Client(), ts.URL, "demo-proj", "stale-tok", "t", "b", "")
 	if err == nil {
 		t.Fatal("エラーになるはず")
 	}
@@ -74,7 +97,7 @@ func TestSendOtherServerError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	invalid, err := Send(context.Background(), ts.Client(), ts.URL, "demo-proj", "tok", "t", "b")
+	invalid, err := Send(context.Background(), ts.Client(), ts.URL, "demo-proj", "tok", "t", "b", "")
 	if err == nil {
 		t.Fatal("エラーになるはず")
 	}
@@ -84,10 +107,10 @@ func TestSendOtherServerError(t *testing.T) {
 }
 
 func TestSendRequiresProjectAndToken(t *testing.T) {
-	if _, err := Send(context.Background(), http.DefaultClient, "", "", "tok", "t", "b"); err == nil {
+	if _, err := Send(context.Background(), http.DefaultClient, "", "", "tok", "t", "b", ""); err == nil {
 		t.Fatal("projectID 空でエラーになるはず")
 	}
-	if _, err := Send(context.Background(), http.DefaultClient, "", "proj", "", "t", "b"); err == nil {
+	if _, err := Send(context.Background(), http.DefaultClient, "", "proj", "", "t", "b", ""); err == nil {
 		t.Fatal("token 空でエラーになるはず")
 	}
 }
