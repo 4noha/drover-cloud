@@ -60,6 +60,11 @@ func handler() http.Handler {
 				os.Getenv("FIREBASE_WEB_CONFIG_B64")); e == nil && len(b) > 0 {
 				ws.SetFirebaseWebConfig(string(b))
 			}
+			// Web Push（FCM）公開鍵（任意）。未設定ならクライアントが
+			// 購読ボタンを出さない＝既存構成は無影響。
+			if v := os.Getenv("FIREBASE_VAPID_KEY"); v != "" {
+				ws.SetVapidKey(v)
+			}
 			mux.Handle("/", ws.Handler()) // /,/login,/auth/google,/api,/ws
 			log.Printf("web 管理 UI 有効（project=%s, allow=%s）", proj, allowed)
 			return mux

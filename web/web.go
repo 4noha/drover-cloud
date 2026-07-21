@@ -44,6 +44,10 @@ type Server struct {
 	// JSON・env 由来・任意）。設定時のみ /api/fbtoken（更新 push 用
 	// custom token 発行）が有効になる。
 	fbWebConfig string
+	// vapidKey は Web Push（FCM）の公開鍵（env 由来・任意）。空なら
+	// /api/fbtoken の vapidKey フィールドが空文字＝クライアントは push 購読
+	// ボタンを表示しない（config はあるが push 鍵未発行の過渡構成に対応）。
+	vapidKey string
 
 	// 目標版（最新 Release tag）。seam＝テストで GitHub に出ない。
 	latestTag func() (string, error)
@@ -101,6 +105,12 @@ func (s *Server) SetFirebaseWebConfig(cfgJSON string) {
 	}
 }
 
+// SetVapidKey は Web Push（FCM）公開鍵を設定する。未設定なら
+// /api/fbtoken の vapidKey は空文字＝クライアントは購読ボタンを出さない。
+func (s *Server) SetVapidKey(key string) {
+	s.vapidKey = key
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.root)
@@ -111,14 +121,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/pcs", s.apiGuard(s.apiPCs))
 	mux.HandleFunc("/api/devices", s.apiGuard(s.apiDevices))
 	mux.HandleFunc("/api/sessions", s.apiGuard(s.apiSessions))
-	mux.HandleFunc("/api/version", s.apiGuard(s.apiVersion))    // 目標版（🟢/🔴 判定用）
-	mux.HandleFunc("/api/fbtoken", s.apiGuard(s.apiFBToken))    // Firestore push 用 custom token
-	mux.HandleFunc("/api/pc/delete", s.apiGuard(s.apiDeletePC)) // 端末ペアリング削除
-	mux.HandleFunc("/api/command", s.apiGuard(s.apiCommand))    // 遠隔命令投入（owner・POST）
-	mux.HandleFunc("/api/commands", s.apiGuard(s.apiCommands))  // 命令監査一覧（GET）
-	mux.HandleFunc("/api/enroll", s.apiGuard(s.apiEnroll))      // 端末追加コード発行
-	mux.HandleFunc("/enroll", s.enroll)                         // 新 PC が code 交換
+	mux.HandleFunc("/api/version", s.apiGuard(s.apiVersion))      // 目標版（🟢/🔴 判定用）
+	mux.HandleFunc("/api/fbtoken", s.apiGuard(s.apiFBToken))      // Firestore push 用 custom token
+	mux.HandleFunc("/api/push-token", s.apiGuard(s.apiPushToken)) // Web Push (FCM) 登録トークン保存
+	mux.HandleFunc("/api/pc/delete", s.apiGuard(s.apiDeletePC))   // 端末ペアリング削除
+	mux.HandleFunc("/api/command", s.apiGuard(s.apiCommand))      // 遠隔命令投入（owner・POST）
+	mux.HandleFunc("/api/commands", s.apiGuard(s.apiCommands))    // 命令監査一覧（GET）
+	mux.HandleFunc("/api/enroll", s.apiGuard(s.apiEnroll))        // 端末追加コード発行
+	mux.HandleFunc("/enroll", s.enroll)                           // 新 PC が code 交換
 	mux.HandleFunc("/ws", s.wsViewer)
+	// SW はサイトルート直下から配信（既定 scope=/ にするため。/static/ 配下
+	// だと既定 scope が /static/* に限定され notificationclick の
+	// clients.matchAll がページ側のタブを捕まえられない）。
+	mux.HandleFunc("/firebase-messaging-sw.js", s.firebaseMessagingSW)
 	// slave（共用 PC）relay 代行エンドポイント。/slave/token のみ refresh
 	// secret ゲート、他は slaveGuard（RS256 bearer）。enrollSA 未設定なら
 	// 各々 fail-closed（404/401）＝slave 機能 off で従来構成は無影響。
@@ -389,6 +404,47 @@ func (s *Server) apiCommand(w http.ResponseWriter, r *http.Request, t webauth.To
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": id})
+}
+
+// firebaseMessagingSW はサイトルートから Service Worker を配信する
+// （embed 済み static/firebase-messaging-sw.js の中身をそのまま返す・
+// ルート直下パスで既定 scope=/ にするための専用ルート）。認証不要
+// （SW 登録はページ読み込み前に走り得るため cookie ガードしない・
+// 中身自体は秘密情報を含まない静的スクリプト）。
+func (s *Server) firebaseMessagingSW(w http.ResponseWriter, r *http.Request) {
+	b, err := staticFS.ReadFile("static/firebase-messaging-sw.js")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	// SW は頻繁な更新チェックが望ましい（ブラウザは既定で高々 24h キャッシュ
+	// するため、明示的に短命化して更新を早く反映）。
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(b)
+}
+
+// apiPushToken: ブラウザが取得した FCM 登録トークンを保存（owner cookie
+// 必須・POST 限定）。pc スコープ検証はしない＝Web Push はオーナー全体の
+// 購読（どの PC でタスクが終わっても登録済み全ブラウザへ通知したいため、
+// apiCommand のような pc 単位の allows() は不要＝仕様として意図的）。
+func (s *Server) apiPushToken(w http.ResponseWriter, r *http.Request, _ webauth.Token) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"post only"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	token := r.FormValue("token")
+	if token == "" {
+		http.Error(w, `{"error":"token required"}`, http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := s.st.SavePushToken(ctx, token, r.UserAgent()); err != nil {
+		http.Error(w, `{"error":"firestore"}`, http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 // apiCommands: 命令監査一覧（新しい順）。owner のみ・スコープ検証。

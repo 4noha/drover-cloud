@@ -101,7 +101,8 @@ func (s *Server) apiFBToken(w http.ResponseWriter, r *http.Request, _ webauth.To
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"token":  tok,
-		"config": json.RawMessage(s.fbWebConfig),
+		"token":    tok,
+		"config":   json.RawMessage(s.fbWebConfig),
+		"vapidKey": s.vapidKey, // 空文字なら Web Push 未設定＝クライアントは購読UIを隠す
 	})
 }

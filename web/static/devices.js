@@ -271,3 +271,74 @@ function setupAdd() {
 
 main();
 setupAdd();
+setupPush();
+
+// Web Push（タスク完了通知）: herdr のネイティブ agent_status 検出
+// （producer.go が working→idle/done/blocked を Firestore へ書く）を
+// 各 PC の herdr-drover daemon が拾い FCM 送信する。ここはブラウザ側の
+// 購読（許可要求→SW登録→token取得→サーバ登録）のみを担当。
+async function setupPush() {
+  const btn = $("pushbtn");
+  if (!btn) return;
+  if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+    return; // 非対応ブラウザ（購読UIを出さない＝機能自体は degrade）
+  }
+  if (Notification.permission === "denied") return; // ユーザーの拒否を尊重、再度は促さない
+
+  const subscribe = async () => {
+    try {
+      const reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+      const r = await fetch("/api/fbtoken", { headers: { Accept: "application/json" } });
+      if (!r.ok) return false; // Firebase 未設定
+      const { config, vapidKey } = await r.json();
+      if (!vapidKey) return false; // Web Push 未設定（config はあるが鍵未発行）
+      const base = "https://www.gstatic.com/firebasejs/11.6.1/";
+      const [appM, msgM] = await Promise.all([
+        import(base + "firebase-app.js"),
+        import(base + "firebase-messaging.js"),
+      ]);
+      const app = appM.initializeApp(config, "push"); // term.js 側の default app と名前衝突回避
+      const messaging = msgM.getMessaging(app);
+      const token = await msgM.getToken(messaging, { vapidKey, serviceWorkerRegistration: reg });
+      if (!token) return false;
+      // フォアグラウンド（タブが見えている間）は SW の onBackgroundMessage が
+      // 発火しない仕様＝ここで明示的に受けて OS 通知を出す（tag で最新集約）。
+      msgM.onMessage(messaging, (payload) => {
+        const n = payload.notification || {};
+        try {
+          new Notification(n.title || "herdr-drover", { body: n.body || "", tag: "herdr-drover-task" });
+        } catch (e) { /* 無視: 通知 API 制約下でも購読自体は継続 */ }
+      });
+      await fetch("/api/push-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token }),
+      });
+      return true;
+    } catch (e) {
+      console.warn("push 購読失敗:", e);
+      return false;
+    }
+  };
+
+  if (Notification.permission === "granted") {
+    // 既に許可済み（再訪問）: ボタンは出さず token を静かに再登録
+    // （getToken は既存 token を再利用＝サーバ側の last_seen だけ更新）。
+    subscribe();
+    return;
+  }
+  // 未許可（初回）: ボタンでオプトイン（無断で permission prompt を出さない）。
+  btn.style.display = "inline-block";
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { btn.style.display = "none"; return; }
+      const ok = await subscribe();
+      btn.textContent = ok ? "🔔 push 通知 有効" : "🔔 push 通知（未設定）";
+      if (ok) setTimeout(() => { btn.style.display = "none"; }, 2000);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
