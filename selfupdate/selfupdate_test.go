@@ -90,6 +90,18 @@ func fixtureServer(t *testing.T, tag string, bin []byte, checksums string) (gotU
 	return &ua, &accept
 }
 
+// seamProbeOK は「置換前の実行可否チェック」を成功側へ固定する。fixture の
+// 新バイナリはただのテキスト（実行できない）なので、置換経路そのものを検証
+// したいテストではここを差し替える。チェック本体の検証は
+// TestProbeExecutableRealBinaries、チェックが働いて中止することの検証は
+// TestUpdateAbortsWhenNewBinaryCannotRun が担う。
+func seamProbeOK(t *testing.T) {
+	t.Helper()
+	old := probeExec
+	probeExec = func(string) error { return nil }
+	t.Cleanup(func() { probeExec = old })
+}
+
 // seamExecutable は置換先を一時ファイルに向ける（実行中テストバイナリを
 // 書き換えない）。旧内容 0755 で作る＝実バイナリ配置と同型。
 func seamExecutable(t *testing.T, oldContent []byte) string {
@@ -110,6 +122,7 @@ func TestUpdateViaLocalFixture(t *testing.T) {
 	sums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), assetName())
 	ua, accept := fixtureServer(t, "v9.9.9", newBin, sums)
 	exe := seamExecutable(t, []byte("OLD-BINARY-v0.1.0\n"))
+	seamProbeOK(t)
 
 	tag, updated, err := Update("v0.1.0")
 	if err != nil {
@@ -173,5 +186,78 @@ func TestExpectedSHAExactMatch(t *testing.T) {
 	}
 	if _, ok := expectedSHA(sums, "no_such"); ok {
 		t.Fatalf("不在 asset で ok=true")
+	}
+}
+
+// ============ 置換前の実行可否チェック（2026-07-26 の実障害の再発防止） ============
+
+// 実障害: Windows の Smart App Control が**配布バイナリの実行**をブロックする
+// 環境で self-update が走り、sha256 一致の正しいバイナリで稼働中バイナリを
+// 上書きした結果、**新バイナリが起動できず daemon が消えた**（タスク
+// スケジューラは logon トリガのみ＝誰も復帰させない）。sha256 検証では
+// 「正しいが**この環境では動かない**」を防げないのが要点。
+//
+// 本テストは probeExec を差し替えず **実プロセス起動**で検証する。
+func TestProbeExecutableRealBinaries(t *testing.T) {
+	// (a) 実行できるファイル: 自テストバイナリを「1 件も走らせない」引数で起動。
+	//     実際に CreateProcess/execve が通ることを確かめる（合成しない）。
+	oldArgs := probeArgs
+	probeArgs = []string{"-test.run=^$"}
+	t.Cleanup(func() { probeArgs = oldArgs })
+	if err := probeExecutable(os.Args[0]); err != nil {
+		t.Fatalf("実行できるバイナリを弾いた（偽陽性＝更新が永久に止まる）: %v", err)
+	}
+
+	// (b) 実行できないファイル: 実行ビットを立てたテキスト（unix=exec format
+	//     error / windows=有効な PE でない）。旧コードはこれを place していた。
+	bad := filepath.Join(t.TempDir(), "not-a-binary.exe")
+	if err := os.WriteFile(bad, []byte("#not an executable\x00\x01\x02"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := probeExecutable(bad)
+	if err == nil {
+		t.Fatalf("実行できないファイルを通した（この穴が daemon 消失事故の本体）")
+	}
+	if !strings.Contains(err.Error(), "起動確認に失敗") {
+		t.Fatalf("原因が伝わらないエラー文: %v", err)
+	}
+}
+
+// 起動確認に失敗したら **place しない**＝稼働中バイナリは無傷のまま更新だけ
+// 諦めること（旧コードは上書きしてしまい復帰不能だった）。
+func TestUpdateAbortsWhenNewBinaryCannotRun(t *testing.T) {
+	newBin := []byte("NEW-BINARY-v9.9.9\n")
+	sum := sha256.Sum256(newBin)
+	sums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), assetName())
+	fixtureServer(t, "v9.9.9", newBin, sums)
+	oldContent := []byte("OLD-BINARY-v0.1.0\n")
+	exe := seamExecutable(t, oldContent)
+
+	// 実環境の「SAC が実行を拒否する」に相当（sha256 は一致している＝
+	// 検証段では通ってしまう経路）。
+	old := probeExec
+	probeExec = func(string) error { return fmt.Errorf("Application Control policy") }
+	t.Cleanup(func() { probeExec = old })
+
+	tag, updated, err := Update("v0.1.0")
+	if err == nil {
+		t.Fatalf("起動できない新バイナリで更新が成功扱いになった: tag=%q updated=%v", tag, updated)
+	}
+	if updated {
+		t.Fatalf("updated=true になっている（置換していないのに更新済みと報告）")
+	}
+	if !strings.Contains(err.Error(), "稼働中のバイナリは無傷") {
+		t.Fatalf("何が起きたか伝わらないエラー文: %v", err)
+	}
+	got, _ := os.ReadFile(exe)
+	if string(got) != string(oldContent) {
+		t.Fatalf("起動確認に失敗したのに稼働中バイナリが書き換わった（事故の再発）: %q", got)
+	}
+	// 一時ファイルを置き去りにしない（defer os.Remove の経路が生きていること）。
+	entries, _ := os.ReadDir(filepath.Dir(exe))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".herdr-drover-new-") {
+			t.Fatalf("一時ファイルが残っている: %s", e.Name())
+		}
 	}
 }

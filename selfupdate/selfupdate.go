@@ -16,6 +16,7 @@
 package selfupdate
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -193,7 +195,14 @@ func replaceSelf(newBin []byte) error {
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
 	dir := filepath.Dir(exe)
-	tmp, err := os.CreateTemp(dir, ".herdr-drover-new-*")
+	// ⚠ Windows は拡張子が無いと os/exec が起動できない（lookExtensions）＝
+	// 置換前の実行可否チェック（probeExec）のために .exe を付ける。最終的な
+	// 名前は placeBinary の rename 先（= exe）なのでここでの名前は一時的。
+	pattern := ".herdr-drover-new-*"
+	if runtime.GOOS == "windows" {
+		pattern = ".herdr-drover-new-*.exe"
+	}
+	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		// 書込不可（/usr/local/bin 等）→ 明示エラーで再インストール案内
 		return fmt.Errorf("%s に書込不可: %w（インストール手順の再実行 or sudo）", dir, err)
@@ -211,9 +220,56 @@ func replaceSelf(newBin []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	// 原子置換の最終段は place_unix.go（drover は Windows out-of-scope＝
-	// DESIGN。cm の M8f OS-split 構成だけ踏襲してファイルを分けておく）。
+	// **置換前に新バイナリを 1 回起動して実行できることを確かめる**。
+	// ここを通さないと「起動できないバイナリで稼働中のバイナリを上書きする」
+	// ＝daemon が消えて誰も復帰させられない事故になる（2026-07-26 に実発生:
+	// Windows の Smart App Control が配布バイナリの実行をブロックし、
+	// self-update 後に daemon が起動不能のまま停止した。sha256 は一致しており
+	// 検証では防げない＝「正しいバイナリだが**この環境では動かない**」）。
+	// 失敗時は place しない＝稼働中バイナリは無傷のまま更新だけ諦める。
+	if err := probeExec(tmpName); err != nil {
+		return fmt.Errorf("新バイナリを実行できないため更新を中止した（稼働中のバイナリは無傷）: %w", err)
+	}
+	// 原子置換の最終段は place_{unix,windows}.go（cm の M8f OS-split 構成）。
 	return placeBinary(tmpName, exe)
+}
+
+// probeArgs は probeExecutable が新バイナリへ渡す引数。副作用が無く即座に
+// exit 0 する呼び出しであること（herdr-drover は `version`）。
+var probeArgs = []string{"version"}
+
+// probeExec は「置換前の実行可否チェック」の seam（テストで差し替える）。
+var probeExec = probeExecutable
+
+// probeExecutable は path を実際に起動して exit 0 を確認する。
+// 検出できるのは sha256 では防げない級の失敗＝OS の実行ポリシーによる拒否
+// （Windows の Smart App Control / AppLocker、unix の noexec マウント）・
+// アーキテクチャ不一致・破損 PE/ELF など。
+func probeExecutable(path string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, probeArgs...).CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("起動確認がタイムアウト（%v %v）", path, probeArgs)
+		}
+		s := strings.TrimSpace(string(out))
+		if len(s) > 200 {
+			s = s[:200] + "…"
+		}
+		return fmt.Errorf("起動確認に失敗（%v）: %w（出力: %q）%s", probeArgs, err, s, windowsSACHint())
+	}
+	return nil
+}
+
+// windowsSACHint は Windows でだけ足す原因候補の案内（silent に諦めない）。
+func windowsSACHint() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	return "。Windows で未署名の配布バイナリが Smart App Control に" +
+		"ブロックされている可能性がある（`Unblock-File` では解けない）＝" +
+		"その場合はローカルビルドを手動配置すること"
 }
 
 func normalize(v string) string {
