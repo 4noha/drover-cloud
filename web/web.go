@@ -9,7 +9,9 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -26,6 +28,43 @@ import (
 
 //go:embed static
 var staticFS embed.FS
+
+// staticETags は embed 済み静的ファイルの内容ハッシュ（起動時に 1 回計算）。
+var staticETags = map[string]string{}
+
+// staticHandler は静的ファイルを **必ず再検証**させて配信する。
+//
+// ⚠**embed.FS は modtime が 0** なので http.FileServer は Last-Modified を出さず、
+// ETag も付かない＝**検証子がまったく無い**。ブラウザはヒューリスティックに
+// キャッシュするので、**UI を直してデプロイしても利用者に届かない**（実障害
+// 2026-07-25: 再起動ボタンの文言変更がデプロイ済みなのに反映されなかった）。
+//
+// 内容ハッシュの ETag を付けて `Cache-Control: no-cache`（＝キャッシュしてよいが
+// 毎回再検証）にする。変更が無ければ 304 で本文は流れないので転送量も増えない。
+func staticHandler(sub fs.FS) http.Handler {
+	_ = fs.WalkDir(sub, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		b, rerr := fs.ReadFile(sub, p)
+		if rerr != nil {
+			return nil
+		}
+		sum := sha256.Sum256(b)
+		staticETags[p] = `"` + hex.EncodeToString(sum[:8]) + `"`
+		return nil
+	})
+	fileSrv := http.FileServer(http.FS(sub))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		if et, ok := staticETags[name]; ok {
+			// ETag は ServeContent より**前**に立てる（If-None-Match の判定に使われる）。
+			w.Header().Set("ETag", et)
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		fileSrv.ServeHTTP(w, r)
+	})
+}
 
 const cookieName = "cm_session"
 const cookieTTL = 12 * time.Hour
@@ -148,7 +187,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/slave/commands", s.slaveGuard(s.slaveCommands))
 	mux.HandleFunc("/slave/command-ack", s.slaveGuard(s.slaveAckCommand))
 	sub, _ := fs.Sub(staticFS, "static")
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
+	mux.Handle("/static/", http.StripPrefix("/static/", staticHandler(sub)))
 	return mux
 }
 
