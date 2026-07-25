@@ -46,6 +46,11 @@ var ValidCommands = map[string]bool{
 	// 更新なのに対し、こちらは **claude 本体**の更新＝別物。更新が無くても
 	// 再起動する（ディスクは最新だがセッションが旧版、を直すのが目的）。
 	"update-claude": true,
+	// Web のワンボタン。claude 更新＋セッション反映 → herdr-drover 自己更新 →
+	// 自身の再起動、を agent 側で**逐次**実行する。self-update / update-claude /
+	// restart-agent の 3 ボタンを 1 つに集約したもの（個別命令も allowlist には
+	// 残す＝CLI や旧 UI・トラブルシュートから引き続き投げられる）。
+	"update-all": true,
 }
 
 var errAlreadyClaimed = errors.New("already claimed")

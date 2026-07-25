@@ -120,25 +120,18 @@ async function main() {
         };
         return b;
       };
-      ops.appendChild(mkOp("再起動", "restart-agent",
-        "herdr-drover / claude-master の launchd デーモンを再起動します（数秒の同期断）。"));
-      ops.appendChild(mkOp("更新", "self-update",
-        "最新 Release へ自己更新し再起動します（古い場合のみ）。"));
-      // claude バイナリ更新後の一括反映。exec 済み claude は symlink の
-      // 張替えを追わないので、pane を作り直して初めて新版になる。
-      // 作業中（agent_status=working）のセッションは agent 側で skip される。
-      ops.appendChild(mkOp("claude 再起動", "restart-claude",
-        "この PC のローカル claude セッションを会話を引き継いだまま作り直し、" +
-        "新しい claude バイナリを読ませます。\n" +
-        "作業中のセッションは自動でスキップされます（↗窓 の注入 pane は対象外）。"));
-      // claude 本体の更新まで含む 1 コマンド。上の「更新」(self-update) は
-      // herdr-drover 自身の更新＝別物なので、ラベルで明示的に区別する。
-      ops.appendChild(mkOp("claude 更新", "update-claude",
-        "claude 本体を最新へ更新し、そのままこの PC のセッションへ反映します" +
-        "（更新＋再起動）。\n" +
-        "更新が無い場合もセッションは作り直します（ディスクだけ新しくセッションが" +
-        "旧版のままなのを直すため）。\n" +
-        "作業中のセッションは自動でスキップされます。"));
+      // ワンボタン集約: claude 本体更新＋セッション反映 → herdr-drover 自己更新
+      // → 再起動、を agent が**逐次**実行する（個別の self-update /
+      // update-claude / restart-agent は冗長なので UI からは畳んだ）。
+      // ⚠自身の再起動は exit でしか反映できず、その時点でハンドラが終わる＝
+      // agent 側で「再起動は必ず最後」の順序が保証されている。
+      ops.appendChild(mkOp("更新", "update-all",
+        "この PC をまとめて最新にします（数分かかることがあります）:\n" +
+        "  1. claude 本体を更新し、セッションを会話を引き継いだまま作り直す\n" +
+        "  2. herdr-drover 自身を更新する\n" +
+        "  3. デーモンを再起動して反映する\n" +
+        "作業中のセッションは自動でスキップされます。処理は逐次実行され、" +
+        "結果は「履歴」で確認できます。"));
       const hist = el("button", { className: "diag-btn" }, "履歴");
       const histBox = el("div");
       hist.onclick = async () => {
