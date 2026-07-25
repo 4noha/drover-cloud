@@ -35,6 +35,12 @@ var ValidCommands = map[string]bool{
 	"restart-agent": true, // launchd 2 デーモン kickstart -k
 	"self-update":   true, // selfupdate.Update→自己/monitor 再起動
 	"restart-proxy": true, // 当該 claude proxy を --resume で再起動（Phase3）
+	// claude セッション本体を会話ごと作り直して**新しい claude バイナリ**を
+	// 掴ませる（exec 済みプロセスは ~/.local/bin/claude の symlink 張替えを
+	// 追わない）。sid 指定＝その 1 枚／sid 空＝その PC のローカル claude pane
+	// 全部。drover 側の実体は restartclaude.go（agent 自身は再起動しない＝
+	// restart-agent とは別物）。
+	"restart-claude": true,
 }
 
 var errAlreadyClaimed = errors.New("already claimed")

@@ -506,6 +506,36 @@ function run() {
     };
   }
 
+  // 「⟳claude」: この claude セッションを**新しい claude バイナリ**で作り直す
+  // （restart-claude）。exec 済みプロセスは ~/.local/bin/claude の symlink 張替えを
+  // 追わないので、claude 本体を更新したら pane を作り直して初めて新版になる。
+  // 会話は herdr が持つ会話 uuid の --resume で継続。上の「復帰」(restart-proxy)は
+  // bridge を張り直すだけで claude プロセスは触らない＝別物。
+  const rcB = $("rstclaude");
+  if (rcB) {
+    rcB.style.display = "";
+    rcB.onclick = async () => {
+      if (!confirm((dir || sid) + "\nこの claude セッションを会話を引き継いだ" +
+        "まま作り直し、新しい claude バイナリを読ませます。\n" +
+        "作業中なら実行されません（履歴に skip として残ります）。\n" +
+        "よろしいですか？")) return;
+      rcB.disabled = true;
+      try {
+        const body = new URLSearchParams({ pc, cmd: "restart-claude", sid });
+        const r = await fetch("/api/command", {
+          method: "POST", headers: { Accept: "application/json",
+            "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString(),
+        });
+        if (r.status === 401) { location.href = "/login"; return; }
+        if (!r.ok) throw new Error("投入失敗 " + r.status);
+        $("stat").textContent = "restart-claude 投入（結果は履歴で監査）";
+      } catch (e) {
+        if (e.message !== "unauth") alert("エラー: " + e.message);
+      } finally { rcB.disabled = false; }
+    };
+  }
+
   // window resize / ズーム / スクロール / URL バーでは **何もしない**
   // （意図的にハンドラ無し＝RESIZE 逆流の暴走を構造的に防止）。
 }

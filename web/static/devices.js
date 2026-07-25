@@ -124,6 +124,13 @@ async function main() {
         "herdr-drover / claude-master の launchd デーモンを再起動します（数秒の同期断）。"));
       ops.appendChild(mkOp("更新", "self-update",
         "最新 Release へ自己更新し再起動します（古い場合のみ）。"));
+      // claude バイナリ更新後の一括反映。exec 済み claude は symlink の
+      // 張替えを追わないので、pane を作り直して初めて新版になる。
+      // 作業中（agent_status=working）のセッションは agent 側で skip される。
+      ops.appendChild(mkOp("claude 再起動", "restart-claude",
+        "この PC のローカル claude セッションを会話を引き継いだまま作り直し、" +
+        "新しい claude バイナリを読ませます。\n" +
+        "作業中のセッションは自動でスキップされます（↗窓 の注入 pane は対象外）。"));
       const hist = el("button", { className: "diag-btn" }, "履歴");
       const histBox = el("div");
       hist.onclick = async () => {
@@ -196,6 +203,27 @@ async function main() {
               } finally { rb.disabled = false; }
             };
             right.appendChild(rb);
+          }
+          // このセッションだけ claude バイナリを入れ替える（会話は --resume で
+          // 継続・pane はその場で作り直し）。"復帰"(restart-proxy) は bridge を
+          // 張り直すだけで claude プロセスは触らない＝別物。
+          {
+            const cb = el("button", { className: "diag-btn" }, "claude 再起動");
+            cb.onclick = async () => {
+              if (!confirm(d.id + " / " + dir + "\n" +
+                "この claude セッションを会話を引き継いだまま作り直し、" +
+                "新しい claude バイナリを読ませます。\n" +
+                "作業中なら実行されません（履歴に skip として残ります）。\n" +
+                "よろしいですか？")) return;
+              cb.disabled = true;
+              try {
+                await postCmd(d.id, "restart-claude", x.key);
+                $("stat").textContent = dir + " へ restart-claude 投入（履歴で監査）";
+              } catch (e) {
+                if (e.message !== "unauth") alert("エラー: " + e.message);
+              } finally { cb.disabled = false; }
+            };
+            right.appendChild(cb);
           }
           const a = el("a", {
             href: "/term?pc=" + encodeURIComponent(d.id) +
