@@ -388,6 +388,9 @@ func (s *Server) apiCommand(w http.ResponseWriter, r *http.Request, t webauth.To
 	pc := r.FormValue("pc")
 	cmd := r.FormValue("cmd")
 	sid := r.FormValue("sid")
+	// agent は任意（空＝その PC の全エージェント）。旧 UI は送ってこないので
+	// 空で degrade する＝後方互換。
+	agent := r.FormValue("agent")
 	if pc == "" || !s.allows(t, pc) {
 		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
@@ -398,7 +401,7 @@ func (s *Server) apiCommand(w http.ResponseWriter, r *http.Request, t webauth.To
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	id, err := s.st.PushCommand(ctx, pc, cmd, sid, t.PC)
+	id, err := s.st.PushCommand(ctx, pc, cmd, sid, agent, t.PC)
 	if err != nil {
 		http.Error(w, `{"error":"firestore"}`, http.StatusInternalServerError)
 		return

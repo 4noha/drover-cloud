@@ -278,7 +278,7 @@ func TestCommandChannelClaimOnceAndAudit(t *testing.T) {
 	go func() { wErr <- c.WatchCommands(ctx, func(cm Command) { got <- cm }) }()
 	time.Sleep(1500 * time.Millisecond) // listener attach 待ち
 
-	id, err := c.PushCommand(ctx, "pc-cmd", "restart-agent", "", "owner@example.com")
+	id, err := c.PushCommand(ctx, "pc-cmd", "restart-agent", "", "", "owner@example.com")
 	if err != nil || id == "" {
 		t.Fatalf("PushCommand: id=%q err=%v", id, err)
 	}
@@ -312,7 +312,7 @@ func TestCommandChannelClaimOnceAndAudit(t *testing.T) {
 	}
 
 	// 不正コマンドは web 投入時点で拒否
-	if _, err := c.PushCommand(ctx, "pc-cmd", "rm-rf", "", "owner@example.com"); err == nil {
+	if _, err := c.PushCommand(ctx, "pc-cmd", "rm-rf", "", "", "owner@example.com"); err == nil {
 		t.Fatal("未知コマンドが拒否されない（allowlist 不全）")
 	}
 }
@@ -327,7 +327,7 @@ func TestCommandChannelPcExplicitForSlave(t *testing.T) {
 	c := newClient(t, "relay-node") // relay 役: 自 pcID は "relay-node"、扱うのは別 pc
 	const slavePc = "slave-pc"
 
-	id, err := c.PushCommand(ctx, slavePc, "self-update", "", "owner@example.com")
+	id, err := c.PushCommand(ctx, slavePc, "self-update", "", "", "owner@example.com")
 	if err != nil || id == "" {
 		t.Fatalf("PushCommand: id=%q err=%v", id, err)
 	}

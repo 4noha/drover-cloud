@@ -18,6 +18,11 @@ const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
 const qs = new URLSearchParams(location.search);
 const pc = qs.get("pc"), sid = qs.get("sid"), dir = qs.get("dir") || "";
+// agent はセッションのエージェント種別（producer が session doc に載せた canonical
+// label）。一覧から引き継ぐ。**空でも動くこと**が要件 — 旧 PC の session doc には
+// このキーが無く、旧リンク（agent 無し）で開かれることもある。空なら総称へ degrade。
+const agName = qs.get("agent") || "";
+const agDisp = agName || "エージェント";
 
 // 固定論理サイズ。?cols=/?rows= で上書き可（1..2000）。既定 160×500。
 // cols がモデル幅以上なら横は見切れず全文到達（余りは背景空白）。
@@ -112,6 +117,7 @@ async function buildConsoleList() {
       list.push({
         pc: d.id, sid: x.key,
         dir: x.short_dir || x.key || "session",
+        agent: x.agent || "",
       });
     }
   }
@@ -122,6 +128,7 @@ function termURL(c) {
   return "/term?pc=" + encodeURIComponent(c.pc) +
     "&sid=" + encodeURIComponent(c.sid) +
     "&dir=" + encodeURIComponent(c.dir) +
+    (c.agent ? "&agent=" + encodeURIComponent(c.agent) : "") +
     (qs.get("cols") ? "&cols=" + encodeURIComponent(qs.get("cols")) : "") +
     (qs.get("rows") ? "&rows=" + encodeURIComponent(qs.get("rows")) : "");
 }
@@ -506,22 +513,27 @@ function run() {
     };
   }
 
-  // 「⟳claude」: この claude セッションを**新しい claude バイナリ**で作り直す
-  // （restart-claude）。exec 済みプロセスは ~/.local/bin/claude の symlink 張替えを
-  // 追わないので、claude 本体を更新したら pane を作り直して初めて新版になる。
-  // 会話は herdr が持つ会話 uuid の --resume で継続。上の「復帰」(restart-proxy)は
-  // bridge を張り直すだけで claude プロセスは触らない＝別物。
-  const rcB = $("rstclaude");
+  // 「⟳」: このセッションを**新しいエージェントバイナリ**で作り直す
+  // （restart-agent-session）。exec 済みプロセスは ~/.local/bin/<agent> の symlink
+  // 張替えを追わないので、本体を更新したら pane を作り直して初めて新版になる。
+  // 会話は herdr が持つ会話 ref の resume 引数で継続（形はエージェントごとに違う）。
+  // 上の「復帰」(restart-proxy)は bridge を張り直すだけでエージェントプロセスは
+  // 触らない＝別物。
+  // 文言は agName（クエリ由来・空なら総称）で動的化＝別エージェントに
+  // 「claude」と言い切らない。
+  const rcB = $("rstagent");
   if (rcB) {
     rcB.style.display = "";
+    rcB.textContent = "⟳" + (agName || "");
+    rcB.title = agDisp + " を新しいバイナリで再起動（会話は resume で継続）";
     rcB.onclick = async () => {
-      if (!confirm((dir || sid) + "\nこの claude セッションを会話を引き継いだ" +
-        "まま作り直し、新しい claude バイナリを読ませます。\n" +
+      if (!confirm((dir || sid) + "\nこの " + agDisp + " セッションを会話を引き継いだ" +
+        "まま作り直し、新しい " + agDisp + " バイナリを読ませます。\n" +
         "作業中なら実行されません（履歴に skip として残ります）。\n" +
         "よろしいですか？")) return;
       rcB.disabled = true;
       try {
-        const body = new URLSearchParams({ pc, cmd: "restart-claude", sid });
+        const body = new URLSearchParams({ pc, cmd: "restart-agent-session", sid, agent: agName });
         const r = await fetch("/api/command", {
           method: "POST", headers: { Accept: "application/json",
             "Content-Type": "application/x-www-form-urlencoded" },
@@ -529,7 +541,7 @@ function run() {
         });
         if (r.status === 401) { location.href = "/login"; return; }
         if (!r.ok) throw new Error("投入失敗 " + r.status);
-        $("stat").textContent = "restart-claude 投入（結果は履歴で監査）";
+        $("stat").textContent = "restart-agent-session 投入（結果は履歴で監査）";
       } catch (e) {
         if (e.message !== "unauth") alert("エラー: " + e.message);
       } finally { rcB.disabled = false; }

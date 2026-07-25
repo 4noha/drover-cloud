@@ -28,6 +28,13 @@ type Command struct {
 	Status      string `firestore:"status" json:"status"`
 	Detail      string `firestore:"detail" json:"detail"`
 	FinishedAt  string `firestore:"finished_at" json:"finished_at"`
+	// Agent はコーディングエージェント種別（canonical label。"claude"/"codex" 等）。
+	// **空 = その PC の全エージェント**（SID 空と同型）。旧 agent が投入した doc には
+	// このキーが無いので必ず空文字に degrade する＝後方互換。
+	//
+	// ⚠struct タグだけでは Firestore に書かれない。PushCommand の **map リテラルにも
+	// "agent" を足すこと**（Set は map をそのまま書くのでタグを見ない）。
+	Agent string `firestore:"agent" json:"agent"`
 }
 
 // ValidCommands は許可コマンド（web/agent 双方で検証）。
@@ -51,6 +58,57 @@ var ValidCommands = map[string]bool{
 	// restart-agent の 3 ボタンを 1 つに集約したもの（個別命令も allowlist には
 	// 残す＝CLI や旧 UI・トラブルシュートから引き続き投げられる）。
 	"update-all": true,
+
+	// ── 一般化後の命令名（v0.1.11〜）────────────────────────────────
+	// 一般化に伴い "agent" という語がコーディングエージェントを指すようになった
+	// ため、旧名は語彙が衝突する（restart-agent は **drover デーモン**の再起動）。
+	// **旧名は alias として残置**する（allowlist から外すと、まだ更新していない
+	// PC の Web/CLI から投げられなくなる＝先行デプロイの意味が消える）。
+	//
+	// restart-claude → restart-agent-session（agent 指定で任意のエージェント）
+	"restart-agent-session": true,
+	// update-claude → update-agent-cli（agent 本体 CLI の更新＋セッション反映）
+	"update-agent-cli": true,
+	// restart-agent → restart-daemon（**drover デーモン**の kickstart。語彙衝突の解消）
+	"restart-daemon": true,
+}
+
+// ValidAgents はコーディングエージェント種別の canonical label（herdr 0.7.4 の
+// src/detect/mod.rs agent_label() から実ソース抽出した 21 種）。
+//
+// ⚠herdr-drover 側の internal/agentid.CanonicalLabels と**同じ集合**でなければ
+// ならない。ここは「Web から投入できる値」の関門で、agent 側は同じ集合で
+// pane を同定する。片方だけ増えると「投入できるが誰も拾わない命令」または
+// 「拾えるのに投入できない」になる。
+var ValidAgents = map[string]bool{
+	"agy": true, "amp": true, "claude": true, "cline": true, "codex": true,
+	"copilot": true, "cursor": true, "devin": true, "droid": true, "gemini": true,
+	"grok": true, "hermes": true, "kilo": true, "kimi": true, "kiro": true,
+	"maki": true, "mastracode": true, "omp": true, "opencode": true, "pi": true,
+	"qodercli": true,
+}
+
+// CommandAliases は旧命令名 → 新命令名の写像。agent 側は新名で分岐すれば足りる。
+// 旧名で投入された doc は agent="claude" 固定として解釈する（旧名は claude 専用
+// だったので、これが唯一の正しい degrade）。
+var CommandAliases = map[string]string{
+	"restart-claude": "restart-agent-session",
+	"update-claude":  "update-agent-cli",
+	"restart-agent":  "restart-daemon",
+}
+
+// NormalizeCommand は投入された (cmd, agent) を新名へ正規化する。
+// 旧名なら agent を "claude" に固定する（旧名は claude 専用だった＝推測ではなく事実）。
+// 戻り値の legacy は「旧名で投入された」ことを示す（Ack detail に残すため）。
+func NormalizeCommand(cmd, agent string) (newCmd, newAgent string, legacy bool) {
+	if n, ok := CommandAliases[cmd]; ok {
+		// restart-agent（デーモン再起動）は元々 agent 概念を持たない＝空のまま。
+		if cmd != "restart-agent" {
+			agent = "claude"
+		}
+		return n, agent, true
+	}
+	return cmd, agent, false
 }
 
 var errAlreadyClaimed = errors.New("already claimed")
@@ -61,15 +119,20 @@ func (c *Client) cmdCol(pc string) *firestore.CollectionRef {
 
 // PushCommand は owner 認証済 web が遠隔命令を投入（status=pending）。
 // requestedBy（ログイン email）を監査に残す。戻り値は命令 id。
-func (c *Client) PushCommand(ctx context.Context, pc, cmd, sid, requestedBy string) (string, error) {
+func (c *Client) PushCommand(ctx context.Context, pc, cmd, sid, agent, requestedBy string) (string, error) {
 	if !ValidCommands[cmd] {
 		return "", fmt.Errorf("未知のコマンド: %s", cmd)
+	}
+	if agent != "" && !ValidAgents[agent] {
+		// 未知の agent を通すと、受け手が「知らないので全 agent 扱い」に degrade して
+		// **意図より広い破壊**をしかねない。推測せず投入時点で撥ねる。
+		return "", fmt.Errorf("未知のエージェント種別: %s", agent)
 	}
 	var b [12]byte
 	_, _ = rand.Read(b[:])
 	id := hex.EncodeToString(b[:])
 	_, err := c.cmdCol(pc).Doc(id).Set(ctx, map[string]any{
-		"id": id, "cmd": cmd, "sid": sid, "requested_by": requestedBy,
+		"id": id, "cmd": cmd, "sid": sid, "agent": agent, "requested_by": requestedBy,
 		"ts": time.Now().UTC().Format(time.RFC3339Nano), "status": "pending",
 	})
 	return id, err

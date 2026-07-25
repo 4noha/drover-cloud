@@ -142,7 +142,7 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
   <button class="nav intr" id="intr" title="中断 (Esc を送信＝claude の生成を止める)">Esc</button>
   <button class="nav" id="img" title="画像を貼る/選ぶ（モバイル可）">📷</button>
   <button class="nav" id="restart" title="このセッションを復帰(--resume で別プロセス再起動)" style="display:none">復帰</button>
-  <button class="nav" id="rstclaude" title="claude を新しいバイナリで再起動(会話は --resume で継続)" style="display:none">⟳claude</button>
+  <button class="nav" id="rstagent" title="エージェントを新しいバイナリで再起動(会話は resume で継続)" style="display:none">⟳</button>
   <input type="file" accept="image/*" id="imgfile" style="display:none">
   <span id="stat"></span>
  </span>

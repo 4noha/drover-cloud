@@ -65,8 +65,11 @@ function diagPre(x) {
 }
 
 // 遠隔命令投入（owner のみ・POST）。実行前 confirm は呼び元で。
-async function postCmd(pc, cmd, sid) {
-  const body = new URLSearchParams({ pc, cmd, sid: sid || "" });
+// agent はコーディングエージェント種別（"claude"/"codex" 等）。空 = その PC の
+// 全エージェント。旧 agent が動いている PC へ送っても、旧 agent は agent キーを
+// 見ないので従来どおり claude 専用として動く＝後方互換。
+async function postCmd(pc, cmd, sid, agent) {
+  const body = new URLSearchParams({ pc, cmd, sid: sid || "", agent: agent || "" });
   const r = await fetch("/api/command", {
     method: "POST", headers: { Accept: "application/json",
       "Content-Type": "application/x-www-form-urlencoded" },
@@ -76,6 +79,12 @@ async function postCmd(pc, cmd, sid) {
   if (!r.ok) throw new Error("投入失敗 " + r.status);
   return r.json();
 }
+
+// session doc の agent（producer が canonical label を載せる。空 = 不明）から
+// UI 文言を作る。**不明なら "claude" と言い切らず総称にする** — 別エージェントの
+// セッションに「claude を再起動します」と出すのは誤情報。
+function agentLabel(x) { return (x && x.agent) || ""; }
+function agentDisp(x) { return agentLabel(x) || "エージェント"; }
 
 // 命令監査（新しい順）を開閉表示。
 async function cmdAudit(pc) {
@@ -120,14 +129,15 @@ async function main() {
         };
         return b;
       };
-      // ワンボタン集約: claude 本体更新＋セッション反映 → herdr-drover 自己更新
-      // → 再起動、を agent が**逐次**実行する（個別の self-update /
-      // update-claude / restart-agent は冗長なので UI からは畳んだ）。
+      // ワンボタン集約: 導入済みエージェント本体の更新＋セッション反映 →
+      // herdr-drover 自己更新 → 再起動、を agent が**逐次**実行する
+      // （個別の self-update / update-agent-cli / restart-daemon は冗長なので
+      // UI からは畳んだ）。update-all は agent 非依存＝改名不要。
       // ⚠自身の再起動は exit でしか反映できず、その時点でハンドラが終わる＝
       // agent 側で「再起動は必ず最後」の順序が保証されている。
       ops.appendChild(mkOp("更新", "update-all",
         "この PC をまとめて最新にします（数分かかることがあります）:\n" +
-        "  1. claude 本体を更新し、セッションを会話を引き継いだまま作り直す\n" +
+        "  1. エージェント本体を更新し、セッションを会話を引き継いだまま作り直す\n" +
         "  2. herdr-drover 自身を更新する\n" +
         "  3. デーモンを再起動して反映する\n" +
         "作業中のセッションは自動でスキップされます。処理は逐次実行され、" +
@@ -209,17 +219,18 @@ async function main() {
           // 継続・pane はその場で作り直し）。"復帰"(restart-proxy) は bridge を
           // 張り直すだけで claude プロセスは触らない＝別物。
           {
-            const cb = el("button", { className: "diag-btn" }, "claude 再起動");
+            const ag = agentLabel(x), disp = agentDisp(x);
+            const cb = el("button", { className: "diag-btn" }, disp + " 再起動");
             cb.onclick = async () => {
               if (!confirm(d.id + " / " + dir + "\n" +
-                "この claude セッションを会話を引き継いだまま作り直し、" +
-                "新しい claude バイナリを読ませます。\n" +
+                "この " + disp + " セッションを会話を引き継いだまま作り直し、" +
+                "新しい " + disp + " バイナリを読ませます。\n" +
                 "作業中なら実行されません（履歴に skip として残ります）。\n" +
                 "よろしいですか？")) return;
               cb.disabled = true;
               try {
-                await postCmd(d.id, "restart-claude", x.key);
-                $("stat").textContent = dir + " へ restart-claude 投入（履歴で監査）";
+                await postCmd(d.id, "restart-agent-session", x.key, ag);
+                $("stat").textContent = dir + " へ restart-agent-session 投入（履歴で監査）";
               } catch (e) {
                 if (e.message !== "unauth") alert("エラー: " + e.message);
               } finally { cb.disabled = false; }
@@ -229,7 +240,8 @@ async function main() {
           const a = el("a", {
             href: "/term?pc=" + encodeURIComponent(d.id) +
               "&sid=" + encodeURIComponent(x.key) +
-              "&dir=" + encodeURIComponent(dir),
+              "&dir=" + encodeURIComponent(dir) +
+              (agentLabel(x) ? "&agent=" + encodeURIComponent(agentLabel(x)) : ""),
           }, "開く");
           right.appendChild(a);
           row.appendChild(right);
