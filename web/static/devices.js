@@ -131,6 +131,14 @@ async function main() {
         "この PC のローカル claude セッションを会話を引き継いだまま作り直し、" +
         "新しい claude バイナリを読ませます。\n" +
         "作業中のセッションは自動でスキップされます（↗窓 の注入 pane は対象外）。"));
+      // claude 本体の更新まで含む 1 コマンド。上の「更新」(self-update) は
+      // herdr-drover 自身の更新＝別物なので、ラベルで明示的に区別する。
+      ops.appendChild(mkOp("claude 更新", "update-claude",
+        "claude 本体を最新へ更新し、そのままこの PC のセッションへ反映します" +
+        "（更新＋再起動）。\n" +
+        "更新が無い場合もセッションは作り直します（ディスクだけ新しくセッションが" +
+        "旧版のままなのを直すため）。\n" +
+        "作業中のセッションは自動でスキップされます。"));
       const hist = el("button", { className: "diag-btn" }, "履歴");
       const histBox = el("div");
       hist.onclick = async () => {

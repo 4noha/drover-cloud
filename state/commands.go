@@ -41,6 +41,11 @@ var ValidCommands = map[string]bool{
 	// 全部。drover 側の実体は restartclaude.go（agent 自身は再起動しない＝
 	// restart-agent とは別物）。
 	"restart-claude": true,
+	// claude 本体を最新へ更新し、そのままセッションへ反映する 1 コマンド
+	// （claude update → restart-claude）。**self-update は herdr-drover 自身**の
+	// 更新なのに対し、こちらは **claude 本体**の更新＝別物。更新が無くても
+	// 再起動する（ディスクは最新だがセッションが旧版、を直すのが目的）。
+	"update-claude": true,
 }
 
 var errAlreadyClaimed = errors.New("already claimed")
