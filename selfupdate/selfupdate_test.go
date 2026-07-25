@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -124,8 +125,13 @@ func TestUpdateViaLocalFixture(t *testing.T) {
 	if string(got) != string(newBin) {
 		t.Fatalf("バイナリが置換されていない: %q", got)
 	}
+	// 実行権限は POSIX のみの概念（Windows は拡張子で実行可否が決まり、Go の
+	// FileMode は 0666/0444 しか返さない）＝unix でだけ厳密に検査する。
+	// silent に落とさないよう Windows では検査しない理由をログに残す。
 	fi, _ := os.Stat(exe)
-	if fi.Mode().Perm() != 0o755 {
+	if runtime.GOOS == "windows" {
+		t.Logf("Windows: POSIX 実行権限は無い（mode=%v）＝置換内容のみで担保", fi.Mode().Perm())
+	} else if fi.Mode().Perm() != 0o755 {
 		t.Fatalf("実行権限が %v（0755 のはず）", fi.Mode().Perm())
 	}
 	// HTTP 契約: 固有 UA と Accept が fixture に実到達している。
