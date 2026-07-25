@@ -80,11 +80,10 @@ async function postCmd(pc, cmd, sid, agent) {
   return r.json();
 }
 
-// session doc の agent（producer が canonical label を載せる。空 = 不明）から
-// UI 文言を作る。**不明なら "claude" と言い切らず総称にする** — 別エージェントの
-// セッションに「claude を再起動します」と出すのは誤情報。
+// session doc の agent（producer が canonical label を載せる。空 = 不明）。
+// ターミナル画面へクエリで引き継ぎ、あちらの ⟳ ボタンの文言に使う
+// （不明なら総称へ degrade＝別エージェントに「claude」と言い切らない）。
 function agentLabel(x) { return (x && x.agent) || ""; }
-function agentDisp(x) { return agentLabel(x) || "エージェント"; }
 
 // 命令監査（新しい順）を開閉表示。
 async function cmdAudit(pc) {
@@ -215,28 +214,10 @@ async function main() {
             };
             right.appendChild(rb);
           }
-          // このセッションだけ claude バイナリを入れ替える（会話は --resume で
-          // 継続・pane はその場で作り直し）。"復帰"(restart-proxy) は bridge を
-          // 張り直すだけで claude プロセスは触らない＝別物。
-          {
-            const ag = agentLabel(x), disp = agentDisp(x);
-            const cb = el("button", { className: "diag-btn" }, disp + " 再起動");
-            cb.onclick = async () => {
-              if (!confirm(d.id + " / " + dir + "\n" +
-                "この " + disp + " セッションを会話を引き継いだまま作り直し、" +
-                "新しい " + disp + " バイナリを読ませます。\n" +
-                "作業中なら実行されません（履歴に skip として残ります）。\n" +
-                "よろしいですか？")) return;
-              cb.disabled = true;
-              try {
-                await postCmd(d.id, "restart-agent-session", x.key, ag);
-                $("stat").textContent = dir + " へ restart-agent-session 投入（履歴で監査）";
-              } catch (e) {
-                if (e.message !== "unauth") alert("エラー: " + e.message);
-              } finally { cb.disabled = false; }
-            };
-            right.appendChild(cb);
-          }
+          // ⚠セッション行に「<agent> 再起動」ボタンは置かない（v0.1.14 で削除）。
+          // ターミナル画面の ⟳ が同じことをする（restart-agent-session）ので
+          // 二重に置くとどちらを押すべきか分からなくなる。端末カード側は
+          // 「更新」ワンボタン（update-all）に集約済み。
           const a = el("a", {
             href: "/term?pc=" + encodeURIComponent(d.id) +
               "&sid=" + encodeURIComponent(x.key) +
