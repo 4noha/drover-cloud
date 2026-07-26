@@ -261,3 +261,112 @@ func TestUpdateAbortsWhenNewBinaryCannotRun(t *testing.T) {
 		}
 	}
 }
+
+// ── 最新タグ解決の API 非依存化（2026-07-26）────────────────────────────
+//
+// api.github.com は匿名 60 回/時・**IP 単位**なので、同じ回線に複数台の PC が
+// ぶら下がっていると連続リリース時に枯れる（実障害: 1 日 6 リリース × fleet 5 台で
+// `403 API rate limit exceeded`）。共用 PC を含む fleet に GITHUB_TOKEN を配るのは
+// 採らないので、**API を使わない経路を主**にした。
+
+// TestTagFromReleaseURL は Location からタグを取り出す純関数のテーブル。
+// ⚠ 想定外の URL で**黙って何かを返さない**ことが要（誤ったタグで更新判定をしない）。
+func TestTagFromReleaseURL(t *testing.T) {
+	for _, c := range []struct {
+		name, in, want string
+		ok             bool
+	}{
+		{"通常", "https://github.com/o/r/releases/tag/v0.5.33", "v0.5.33", true},
+		{"クエリ付き", "https://github.com/o/r/releases/tag/v1.2.3?x=1", "v1.2.3", true},
+		{"フラグメント付き", "https://github.com/o/r/releases/tag/v1.2.3#a", "v1.2.3", true},
+		{"末尾スラッシュ", "https://github.com/o/r/releases/tag/v1.2.3/", "v1.2.3", true},
+		{"タグ部が空", "https://github.com/o/r/releases/tag/", "", false},
+		{"marker 無し（想定外の飛び先）", "https://github.com/login", "", false},
+		{"空", "", "", false},
+	} {
+		got, ok := tagFromReleaseURL(c.in)
+		if ok != c.ok || got != c.want {
+			t.Errorf("%s: tagFromReleaseURL(%q) = (%q,%v), want (%q,%v)",
+				c.name, c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestLatestTagUsesRedirectNotAPI は **API を叩かずに**タグを解決することを確認する。
+// API ハンドラが呼ばれたら失敗＝レート制限の当たる経路へ戻っていないことの担保。
+func TestLatestTagUsesRedirectNotAPI(t *testing.T) {
+	var apiHits int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/4noha/herdr-drover/releases/latest",
+		func(w http.ResponseWriter, r *http.Request) {
+			apiHits++
+			fmt.Fprint(w, `{"tag_name":"v9.9.9"}`)
+		})
+	mux.HandleFunc("/4noha/herdr-drover/releases/latest",
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://github.com/4noha/herdr-drover/releases/tag/v0.5.33", http.StatusFound)
+		})
+	ts := httptest.NewServer(mux)
+	oldAPI, oldDL := apiBase, dlBase
+	apiBase, dlBase = ts.URL, ts.URL
+	t.Cleanup(func() { apiBase, dlBase = oldAPI, oldDL; ts.Close() })
+
+	tag, err := LatestTag()
+	if err != nil {
+		t.Fatalf("LatestTag: %v", err)
+	}
+	if tag != "v0.5.33" {
+		t.Fatalf("tag = %q, want v0.5.33", tag)
+	}
+	if apiHits != 0 {
+		t.Fatalf("api.github.com を %d 回叩いた（レート制限に当たる経路に戻っている）", apiHits)
+	}
+}
+
+// TestLatestTagFallsBackToAPI は**リダイレクト経路が壊れても更新手段が全滅しない**
+// ことを確認する。self-update は不具合修正の唯一の配布経路なので、GitHub 側の挙動が
+// 変わったときに API へ落ちられることが要。
+func TestLatestTagFallsBackToAPI(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/4noha/herdr-drover/releases/latest",
+		func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"tag_name":"v1.0.0"}`) })
+	// リダイレクトを返さない＝解析できない（GitHub 側の仕様変更を模す）。
+	mux.HandleFunc("/4noha/herdr-drover/releases/latest",
+		func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html>not a redirect</html>") })
+	ts := httptest.NewServer(mux)
+	oldAPI, oldDL := apiBase, dlBase
+	apiBase, dlBase = ts.URL, ts.URL
+	t.Cleanup(func() { apiBase, dlBase = oldAPI, oldDL; ts.Close() })
+
+	tag, err := LatestTag()
+	if err != nil {
+		t.Fatalf("fallback が働かなかった: %v", err)
+	}
+	if tag != "v1.0.0" {
+		t.Fatalf("tag = %q, want v1.0.0", tag)
+	}
+}
+
+// TestLatestTagReportsBothFailures は両経路が落ちたとき**両方の理由**を出すことを
+// 確認する（片方だけだと原因を取り違える）。
+func TestLatestTagReportsBothFailures(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/4noha/herdr-drover/releases/latest",
+		func(w http.ResponseWriter, r *http.Request) { http.Error(w, "rate limited", http.StatusForbidden) })
+	mux.HandleFunc("/4noha/herdr-drover/releases/latest",
+		func(w http.ResponseWriter, r *http.Request) { http.Error(w, "nope", http.StatusInternalServerError) })
+	ts := httptest.NewServer(mux)
+	oldAPI, oldDL := apiBase, dlBase
+	apiBase, dlBase = ts.URL, ts.URL
+	t.Cleanup(func() { apiBase, dlBase = oldAPI, oldDL; ts.Close() })
+
+	_, err := LatestTag()
+	if err == nil {
+		t.Fatal("両経路が落ちたのに成功した")
+	}
+	for _, want := range []string{"リダイレクト経路", "API 経路"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error に %q が含まれない: %v", want, err)
+		}
+	}
+}

@@ -96,8 +96,89 @@ func httpErr(prefix string, resp *http.Response) error {
 	return fmt.Errorf("%s: %s (body=%q)", prefix, resp.Status, body)
 }
 
-// LatestTag は GitHub API で最新リリースの tag を返す。
+// LatestTag は最新リリースの tag を返す。
+//
+// ⚠**まず API を使わない経路を試す**（`latestTagByRedirect`）。api.github.com は
+// 匿名 60 回/時・**IP 単位**なので、同じ回線に複数台の PC がぶら下がっていると
+// 連続リリース時に枯れる（実障害 2026-07-26: 1 日 6 リリース × fleet 5 台で
+// `403 API rate limit exceeded` になり self-update が失敗した）。共用 PC を含む
+// fleet に `GITHUB_TOKEN` を配るのは、その PC を使う他人がプロセス環境から読めて
+// しまうので採らない（SSH 鍵をディスクに置かない設計と整合しない）。
+//
+// リダイレクト経路は `https://github.com/<owner>/<repo>/releases/latest` が返す
+// 302 の Location（`.../releases/tag/<tag>`）からタグを読む。実測でレート制限の
+// ヘッダ自体が付かず、連打しても 302 のままであることを確認済み。
+//
+// ⚠**API 経路は fallback として残す**。self-update は**不具合修正の唯一の配布
+// 経路**なので、GitHub 側の挙動が変わってリダイレクト解析が壊れたときに更新手段が
+// 全滅するのは許容できない。どちらの経路で解決したかは戻り値では区別しないが、
+// fallback に落ちたことは呼び手が診断できるよう error を包んで返す。
 func LatestTag() (string, error) {
+	tag, rerr := latestTagByRedirect()
+	if rerr == nil {
+		return tag, nil
+	}
+	tag, aerr := latestTagByAPI()
+	if aerr == nil {
+		return tag, nil
+	}
+	// 両方落ちたときは**両方の理由**を出す（片方だけだと原因を取り違える）。
+	return "", fmt.Errorf("最新タグを解決できない: リダイレクト経路=%v / API 経路=%w", rerr, aerr)
+}
+
+// latestTagByRedirect は `github.com/<repo>/releases/latest` の 302 Location から
+// タグを取る（API を使わない＝レート制限に当たらない）。
+func latestTagByRedirect() (string, error) {
+	url := fmt.Sprintf("%s/%s/releases/latest", dlBase, repo())
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	setGHHeaders(req)
+	// ⚠ リダイレクトを**追わない**（追うとタグを含む Location が失われる）。
+	// httpc は共有なので、ここだけ CheckRedirect を差し替えた client を使う。
+	noRedirect := &http.Client{
+		Timeout:       httpc.Timeout,
+		Transport:     httpc.Transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		// リリースが 1 つも無い等。API 経路の fallback に回す。
+		return "", httpErr("github releases/latest（リダイレクト無し）", resp)
+	}
+	loc := resp.Header.Get("Location")
+	tag, ok := tagFromReleaseURL(loc)
+	if !ok {
+		return "", fmt.Errorf("Location からタグを読めない: %q", loc)
+	}
+	return tag, nil
+}
+
+// tagFromReleaseURL は `.../releases/tag/<tag>` から `<tag>` を取り出す純関数。
+// ⚠ 末尾を切るだけにしない: タグ名に `/` は使えないので最後の `/` 以降が
+// タグだが、`/releases/tag/` を含まない URL（想定外のリダイレクト先）は
+// **黙って何かを返さず false にする**（誤ったタグで更新判定をしない）。
+func tagFromReleaseURL(loc string) (string, bool) {
+	const marker = "/releases/tag/"
+	i := strings.Index(loc, marker)
+	if i < 0 {
+		return "", false
+	}
+	tag := loc[i+len(marker):]
+	if j := strings.IndexAny(tag, "?#"); j >= 0 {
+		tag = tag[:j]
+	}
+	tag = strings.TrimSuffix(tag, "/")
+	if tag == "" || strings.Contains(tag, "/") {
+		return "", false
+	}
+	return tag, true
+}
+
+// latestTagByAPI は従来の api.github.com 経路（fallback）。
+func latestTagByAPI() (string, error) {
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", apiBase, repo())
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	setGHHeaders(req)
