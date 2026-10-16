@@ -167,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/command", s.apiGuard(s.apiCommand))      // 遠隔命令投入（owner・POST）
 	mux.HandleFunc("/api/commands", s.apiGuard(s.apiCommands))    // 命令監査一覧（GET）
 	mux.HandleFunc("/api/enroll", s.apiGuard(s.apiEnroll))        // 端末追加コード発行
+	mux.HandleFunc("/api/webhook", s.apiGuard(s.apiWebhook))      // セッション状態 Webhook 通知設定（webhooksettings.go・additive）
 	mux.HandleFunc("/enroll", s.enroll)                           // 新 PC が code 交換
 	mux.HandleFunc("/ws", s.wsViewer)
 	// SW はサイトルート直下から配信（既定 scope=/ にするため。/static/ 配下

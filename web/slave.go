@@ -181,11 +181,16 @@ func (s *Server) slavePush(w http.ResponseWriter, r *http.Request, pc string) {
 		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
 		return
 	}
+	// push 前の状態を読んでおく（webhook 通知の旧状態比較用。slave は SA レス
+	// でこの経路以外に agent_status の変化点を観測できないため、ここで
+	// 代理送信する。master は herdr-drover daemon 自身が直接送る＝additive）。
+	oldStatus := s.sessionStatusByKey(r.Context(), pc)
 	changed, err := s.st.PushStatusFor(r.Context(), pc, body.Sessions)
 	if err != nil {
 		http.Error(w, `{"error":"firestore"}`, http.StatusInternalServerError)
 		return
 	}
+	s.dispatchWebhooksForTransitions(pc, oldStatus, body.Sessions)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"changed": changed})
 }
