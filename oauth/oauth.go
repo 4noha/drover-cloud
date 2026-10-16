@@ -30,9 +30,13 @@ type Server struct {
 	gv       webauth.GoogleVerifier
 	// allowedRedirectHosts は DCR で受理する redirect_uri のホスト allowlist
 	// （env MCP_ALLOWED_REDIRECT_HOSTS、カンマ区切り）。空なら DCR は全拒否
-	// （フィッシング対策のデフォルト deny。未決事項7＝Grok Bot のコールバック
+	// （フィッシング対策のデフォルト deny。未決事項7＝コネクタのコールバック
 	// ホストが判明するまではプレースホルダのまま運用する）。
-	allowedRedirectHosts map[string]bool
+	// key はホスト名（小文字）、value は必須パス（空文字列="任意のパスを許可"・
+	// 非空="このパスと完全一致するものだけ許可"）。各エントリは env 側で
+	// "host" または "host/path"（例 "www.cursor.com/agents/mcp/oauth/callback"）
+	// のいずれかで指定する。
+	allowedRedirectHosts map[string]string
 	// selfBase はこのサーバー自身の外部 URL（例 "https://host"、末尾 / 無し）。
 	// メタデータ応答・resource パラメータ照合に使う。
 	selfBase string
@@ -40,7 +44,8 @@ type Server struct {
 
 // New は MCP 認可サーバーを組み立てる。signer/clientID/allowedEmails/gv は
 // 既存 web.New と同じ値を渡す（cookie とログイン許可判定を共有するため）。
-// allowedRedirectHosts は "MCP_ALLOWED_REDIRECT_HOSTS" の値をそのまま渡す。
+// allowedRedirectHosts は "MCP_ALLOWED_REDIRECT_HOSTS" の値をそのまま渡す
+// （カンマ区切り。各エントリは "host" または "host/path"）。
 func New(st *state.Client, signer *webauth.Signer, clientID, allowedEmails string,
 	gv webauth.GoogleVerifier, allowedRedirectHosts, selfBase string) *Server {
 	am := map[string]bool{}
@@ -49,10 +54,18 @@ func New(st *state.Client, signer *webauth.Signer, clientID, allowedEmails strin
 			am[e] = true
 		}
 	}
-	rh := map[string]bool{}
+	rh := map[string]string{}
 	for _, h := range strings.Split(allowedRedirectHosts, ",") {
-		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
-			rh[h] = true
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		host, path := h, ""
+		if i := strings.Index(h, "/"); i >= 0 {
+			host, path = h[:i], h[i:]
+		}
+		if host = strings.ToLower(host); host != "" {
+			rh[host] = path
 		}
 	}
 	if gv == nil {

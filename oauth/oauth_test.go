@@ -145,19 +145,32 @@ func TestPKCEVerify(t *testing.T) {
 }
 
 func TestHostAllowedDefaultDeny(t *testing.T) {
-	s := &Server{allowedRedirectHosts: map[string]bool{}}
+	s := &Server{allowedRedirectHosts: map[string]string{}}
 	if s.hostAllowed("https://grok.example.com/cb") {
 		t.Fatal("allowlist 空なのに許可された（デフォルト deny が壊れている）")
 	}
-	s2 := &Server{allowedRedirectHosts: map[string]bool{"grok.example.com": true}}
+	s2 := &Server{allowedRedirectHosts: map[string]string{"grok.example.com": ""}}
 	if !s2.hostAllowed("https://grok.example.com/cb") {
-		t.Fatal("allowlist 一致のホストが拒否された")
+		t.Fatal("allowlist 一致のホストが拒否された（パス指定なし＝任意パス許可のはず）")
 	}
 	if s2.hostAllowed("http://grok.example.com/cb") { // https 必須
 		t.Fatal("http（非TLS）が許可された")
 	}
 	if s2.hostAllowed("https://evil.example.com/cb") {
 		t.Fatal("allowlist に無いホストが許可された")
+	}
+
+	// パス指定ありのエントリ（例: www.cursor.com/agents/mcp/oauth/callback）は
+	// そのパスと完全一致する場合のみ許可する。
+	s3 := &Server{allowedRedirectHosts: map[string]string{"www.cursor.com": "/agents/mcp/oauth/callback"}}
+	if !s3.hostAllowed("https://www.cursor.com/agents/mcp/oauth/callback") {
+		t.Fatal("パス完全一致なのに拒否された")
+	}
+	if s3.hostAllowed("https://www.cursor.com/other/path") {
+		t.Fatal("パス指定ありのエントリで別パスが許可された")
+	}
+	if s3.hostAllowed("https://www.cursor.com/") {
+		t.Fatal("パス指定ありのエントリでルートパスが許可された")
 	}
 }
 

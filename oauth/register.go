@@ -34,7 +34,8 @@ type registerResponse struct {
 // 数個の文字列で十分収まる。異常に大きい入力を先に撥ねる）。
 const registerBodyMax = 64 * 1024
 
-// hostAllowed は redirect_uri が https かつホストが allowlist に一致するかを
+// hostAllowed は redirect_uri が https かつホスト（・allowlist エントリが
+// パスも指定していればそのパスにも完全一致）が allowlist に一致するかを
 // 検証する。空の allowlist（未設定）は常に拒否＝デフォルト deny。
 func (s *Server) hostAllowed(rawURL string) bool {
 	if len(s.allowedRedirectHosts) == 0 {
@@ -44,7 +45,11 @@ func (s *Server) hostAllowed(rawURL string) bool {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return false
 	}
-	return s.allowedRedirectHosts[strings.ToLower(u.Hostname())]
+	path, ok := s.allowedRedirectHosts[strings.ToLower(u.Hostname())]
+	if !ok {
+		return false
+	}
+	return path == "" || path == u.Path
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
