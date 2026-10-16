@@ -122,6 +122,12 @@ type OAuthToken struct {
 	// Family は access/refresh の発行ペアを束ねる ID（refresh ローテーション時、
 	// 再利用検知で family ごと一括失効するため。token.go（Phase 1）が生成する）。
 	Family string `firestore:"family" json:"family"`
+	// Superseded は refresh token がローテーションで「使用済み」になったことを示す
+	// （削除ではなくフラグ＝再提示されたら MarkOAuthTokenSuperseded 済みと判定
+	// できる＝盗難 refresh の再利用検知の土台。GetOAuthToken はこれを無効として
+	// 扱うが、GetOAuthTokenRaw は区別せず返す＝呼び手が「存在しない」と
+	// 「使用済みを再提示された（reuse）」を区別するため）。
+	Superseded bool `firestore:"superseded" json:"superseded,omitempty"`
 }
 
 func (c *Client) oauthTokensCol() *firestore.CollectionRef {
@@ -142,10 +148,11 @@ func (c *Client) CreateOAuthToken(ctx context.Context, tokenHash string, t OAuth
 	return err
 }
 
-// GetOAuthToken はトークンを検証する（**削除しない**＝access token は
-// 毎リクエスト repeated に検証されるため。期限切れは ok=false で返す
-// （削除まではしない＝TTL ポリシーが掃除する。即時失効は RevokeOAuthToken）。
-func (c *Client) GetOAuthToken(ctx context.Context, tokenHash string) (OAuthToken, bool, error) {
+// GetOAuthTokenRaw はフィルタなしでトークンを読む（期限切れ・superseded でも
+// 中身を返す）。refresh ローテーションの reuse 検知は「存在しない」と
+// 「superseded 済みを再提示された」を区別する必要があるため、この生読みが要る
+// （GetOAuthToken は後者も ok=false にしてしまい区別できない）。
+func (c *Client) GetOAuthTokenRaw(ctx context.Context, tokenHash string) (OAuthToken, bool, error) {
 	snap, err := c.oauthTokensCol().Doc(tokenHash).Get(ctx)
 	if err != nil || !snap.Exists() {
 		return OAuthToken{}, false, nil
@@ -153,6 +160,26 @@ func (c *Client) GetOAuthToken(ctx context.Context, tokenHash string) (OAuthToke
 	var t OAuthToken
 	if e := snap.DataTo(&t); e != nil {
 		return OAuthToken{}, false, nil
+	}
+	return t, true, nil
+}
+
+// MarkOAuthTokenSuperseded は refresh token を「ローテーション済み」とマークする
+// （削除しない＝再提示されたら reuse 検知できるようにするため。token.go が
+// ローテーション時に古い refresh へ呼ぶ）。
+func (c *Client) MarkOAuthTokenSuperseded(ctx context.Context, tokenHash string) error {
+	_, err := c.oauthTokensCol().Doc(tokenHash).Set(ctx,
+		map[string]any{"superseded": true}, firestore.MergeAll)
+	return err
+}
+
+// GetOAuthToken はトークンを検証する（**削除しない**＝access token は
+// 毎リクエスト repeated に検証されるため。期限切れ/superseded は ok=false
+// （削除まではしない＝TTL ポリシーが掃除する。即時失効は RevokeOAuthToken）。
+func (c *Client) GetOAuthToken(ctx context.Context, tokenHash string) (OAuthToken, bool, error) {
+	t, ok, err := c.GetOAuthTokenRaw(ctx, tokenHash)
+	if err != nil || !ok || t.Superseded {
+		return OAuthToken{}, false, err
 	}
 	if exp, perr := time.Parse(time.RFC3339Nano, t.ExpiresAt); perr != nil || time.Now().After(exp) {
 		return OAuthToken{}, false, nil

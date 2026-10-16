@@ -308,6 +308,39 @@ func (c *Client) ListSessions(ctx context.Context, pc string) ([]map[string]any,
 	return out, nil
 }
 
+// WaitSessionStatus は pcs/{pc}/sessions/{sid}.agent_status が want のいずれかに
+// なるまで doc snapshot を listen する（MCP wait_for_status。WaitCommand と
+// 同じ「PC へ命令を送らず snapshot だけ見る」パターン。
+// drover-cloud-mcp-design.md §5.2）。timeout 以内に一致すれば
+// (status, waited, timedOut=false, nil)。超過/doc 不在のままなら
+// (最後に見た status（無ければ ""）, waited, timedOut=true, nil)＝エラーにしない。
+func (c *Client) WaitSessionStatus(ctx context.Context, pc, sid string, want map[string]bool,
+	timeout time.Duration) (status string, waited time.Duration, timedOut bool, err error) {
+	start := time.Now()
+	wctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ref := c.fs.Collection("pcs").Doc(pc).Collection("sessions").Doc(sid)
+	it := ref.Snapshots(wctx)
+	defer it.Stop()
+	last := ""
+	for {
+		snap, e := it.Next()
+		if e != nil {
+			if wctx.Err() != nil {
+				return last, time.Since(start), true, nil // timeout/親 ctx キャンセル＝正常系
+			}
+			return last, time.Since(start), false, e
+		}
+		if snap == nil || !snap.Exists() {
+			continue
+		}
+		last, _ = snap.Data()["agent_status"].(string)
+		if want[last] {
+			return last, time.Since(start), false, nil
+		}
+	}
+}
+
 // PCVersion は pcs/{pc}.cm_version（agent バイナリ版）を返す。未登録/
 // 未設定は ""（エラーにしない＝idle/古い端末も一覧表示は継続）。
 func (c *Client) PCVersion(ctx context.Context, pc string) (string, error) {
@@ -317,6 +350,42 @@ func (c *Client) PCVersion(ctx context.Context, pc string) (string, error) {
 	}
 	v, _ := snap.Data()["cm_version"].(string)
 	return v, nil
+}
+
+// pcOnlineWindow: last_seen からこの時間以内なら online とみなす（daemon の
+// 定期書き込み間隔は 2〜5 分の想定＝drover-cloud-mcp-design.md §9 決定事項5。
+// 間隔の倍以上を見ておき、1 回取りこぼしても誤って offline にしない）。
+const pcOnlineWindow = 10 * time.Minute
+
+// TouchLastSeen は pcs/{pc}.last_seen を今時刻で更新する（herdr-drover daemon
+// が自分の生存を定期的に書き込む用。MCP の list_machines がここから online を
+// 判定する＝Firestore 読むだけで完結させるため。drover-cloud-mcp-design.md
+// §9 決定事項5）。pc は c.pcID（自分）固定ではなく明示指定＝slave 仲介にも
+// 同じ関数で対応できる（AckCommandFor 等と同じ additive パターン）。
+func (c *Client) TouchLastSeen(ctx context.Context, pc string) error {
+	_, err := c.fs.Collection("pcs").Doc(pc).Set(ctx,
+		map[string]any{"last_seen": time.Now().UTC().Format(time.RFC3339Nano)},
+		firestore.MergeAll)
+	return err
+}
+
+// PCLastSeen は last_seen を読み、online 判定を添えて返す。last_seen が無い
+// PC（Phase 2 の daemon 改修が未反映 or 未知）は ok=false＝呼び手は online を
+// 「不明（false 扱い）」にする。偽の online=true を作らないことを優先する。
+func (c *Client) PCLastSeen(ctx context.Context, pc string) (lastSeen string, online bool, err error) {
+	snap, gerr := c.fs.Collection("pcs").Doc(pc).Get(ctx)
+	if gerr != nil || !snap.Exists() {
+		return "", false, nil
+	}
+	ls, _ := snap.Data()["last_seen"].(string)
+	if ls == "" {
+		return "", false, nil
+	}
+	t, perr := time.Parse(time.RFC3339Nano, ls)
+	if perr != nil {
+		return ls, false, nil
+	}
+	return ls, time.Since(t) < pcOnlineWindow, nil
 }
 
 // SessionKeyOf は session マップから doc id（＝同期キー）を返す。

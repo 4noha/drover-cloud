@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/4noha/drover-cloud/mcp"
+	"github.com/4noha/drover-cloud/oauth"
 	"github.com/4noha/drover-cloud/relay"
 	"github.com/4noha/drover-cloud/state"
 	"github.com/4noha/drover-cloud/web"
@@ -66,7 +68,32 @@ func handler() http.Handler {
 				ws.SetVapidKey(v)
 			}
 			mux.Handle("/", ws.Handler()) // /,/login,/auth/google,/api,/ws
-			log.Printf("web 管理 UI 有効（project=%s, allow=%s）", proj, allowed)
+
+			// MCP（drover-cloud-mcp-design.md）。MCP_ENABLED=1 のときだけ
+			// /mcp・/oauth/*・/.well-known/* をマウントする＝未設定なら
+			// 既存構成（relay/web/webauth/state の4パッケージ＝「cm とバイト
+			// 等価」対象）には一切コードパスが増えない。main.go 自体は
+			// この4パッケージに含まれないため、1 行マウントは対象外
+			// （§9 決定事項1・4noha 確認済み）。
+			if os.Getenv("MCP_ENABLED") == "1" {
+				selfBase := os.Getenv("MCP_SELF_BASE_URL")
+				if selfBase == "" {
+					log.Printf("MCP 無効（MCP_SELF_BASE_URL 未設定＝issuer/resource を組み立てられない）")
+				} else {
+					// 未決事項7（Grok Bot の OAuth コールバック URL）はまだ
+					// 確定していないため、MCP_ALLOWED_REDIRECT_HOSTS は空/
+					// プレースホルダのままでよい。空なら DCR は全拒否
+					// （oauth.hostAllowed のデフォルト deny）＝安全側。
+					redirectHosts := os.Getenv("MCP_ALLOWED_REDIRECT_HOSTS")
+					as := oauth.New(st, webauth.NewSigner(key), clientID, allowed, nil,
+						redirectHosts, selfBase)
+					ms := mcp.New(st, as)
+					mux.Handle("/oauth/", as.Handler())
+					mux.Handle("/.well-known/", as.Handler())
+					mux.Handle("/mcp", ms.Handler())
+					log.Printf("MCP 有効（self=%s, redirect_hosts=%q）", selfBase, redirectHosts)
+				}
+			}
 			return mux
 		}
 	} else {
