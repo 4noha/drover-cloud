@@ -10,8 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"time"
-
-	"github.com/4noha/drover-cloud/state"
 )
 
 // toolErr は MCP ツールのビジネスエラー（JSON-RPC プロトコルエラーとは別・
@@ -21,7 +19,10 @@ type toolErr struct {
 	Message string
 }
 
-type toolFn func(ctx context.Context, st *state.Client, args json.RawMessage) (any, *toolErr)
+// toolFn は *Server を受ける（state.Client だけでなく slaveAccess 等の
+// サーバー設定もツール本体が参照できるようにするため。Phase 2 で
+// read_pane/send_input の slave ゲートを足す際に必要になった）。
+type toolFn func(ctx context.Context, srv *Server, args json.RawMessage) (any, *toolErr)
 
 type toolTier struct {
 	scope     string
@@ -29,11 +30,18 @@ type toolTier struct {
 	fn        toolFn
 }
 
+// toolDef は読み取り専用ツール用（既定 annotations）。
 func toolDef(name, desc string, schema map[string]any) map[string]any {
+	return toolDefAnn(name, desc, schema, true, false, true)
+}
+
+// toolDefAnn は annotations を明示するツール定義（送信/中断系など
+// readOnly でないツール用。drover-cloud-mcp-design.md §5 全ツール annotations 必須）。
+func toolDefAnn(name, desc string, schema map[string]any, readOnly, destructive, idempotent bool) map[string]any {
 	return map[string]any{
 		"name": name, "description": desc, "inputSchema": schema,
 		"annotations": map[string]any{
-			"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true,
+			"readOnlyHint": readOnly, "destructiveHint": destructive, "idempotentHint": idempotent,
 		},
 	}
 }
@@ -95,7 +103,8 @@ func strField(m map[string]any, key string) string {
 	return v
 }
 
-func toolListMachines(ctx context.Context, st *state.Client, _ json.RawMessage) (any, *toolErr) {
+func toolListMachines(ctx context.Context, srv *Server, _ json.RawMessage) (any, *toolErr) {
+	st := srv.st
 	pcs, err := st.ListPCs(ctx)
 	if err != nil {
 		return nil, &toolErr{Code: "server_error", Message: err.Error()}
@@ -130,7 +139,8 @@ type listSessionsArgs struct {
 	Status string `json:"status"`
 }
 
-func toolListSessions(ctx context.Context, st *state.Client, raw json.RawMessage) (any, *toolErr) {
+func toolListSessions(ctx context.Context, srv *Server, raw json.RawMessage) (any, *toolErr) {
+	st := srv.st
 	a, ok := decodeArgs[listSessionsArgs](raw)
 	if !ok {
 		return nil, &toolErr{Code: "invalid_request", Message: "引数の解析に失敗"}
@@ -174,7 +184,8 @@ type pcSIDArgs struct {
 	SID string `json:"sid"`
 }
 
-func toolGetSession(ctx context.Context, st *state.Client, raw json.RawMessage) (any, *toolErr) {
+func toolGetSession(ctx context.Context, srv *Server, raw json.RawMessage) (any, *toolErr) {
+	st := srv.st
 	a, ok := decodeArgs[pcSIDArgs](raw)
 	if !ok || a.PC == "" || a.SID == "" {
 		return nil, &toolErr{Code: "invalid_request", Message: "pc/sid が必要"}
@@ -216,7 +227,8 @@ type listCommandsArgs struct {
 	Limit int    `json:"limit"`
 }
 
-func toolListCommands(ctx context.Context, st *state.Client, raw json.RawMessage) (any, *toolErr) {
+func toolListCommands(ctx context.Context, srv *Server, raw json.RawMessage) (any, *toolErr) {
+	st := srv.st
 	a, ok := decodeArgs[listCommandsArgs](raw)
 	if !ok || a.PC == "" {
 		return nil, &toolErr{Code: "invalid_request", Message: "pc が必要"}
@@ -251,7 +263,8 @@ type waitForStatusArgs struct {
 // snapshot listener を張って agent_status の変化を待つ（drover-cloud-mcp-
 // design.md §5.2。「producer が変化時のみ書くので安価」＝WaitCommand と同じ
 // listen-until-match パターンだが対象は sessions/{sid} ）。
-func toolWaitForStatus(ctx context.Context, st *state.Client, raw json.RawMessage) (any, *toolErr) {
+func toolWaitForStatus(ctx context.Context, srv *Server, raw json.RawMessage) (any, *toolErr) {
+	st := srv.st
 	a, ok := decodeArgs[waitForStatusArgs](raw)
 	if !ok || a.PC == "" || a.SID == "" || len(a.Until) == 0 {
 		return nil, &toolErr{Code: "invalid_request", Message: "pc/sid/until が必要"}

@@ -268,6 +268,21 @@ func (c *Client) AckCommand(ctx context.Context, id, status, detail string) erro
 	return err
 }
 
+// GetCommand は commands/{pc}/q/{id} の1件を読む（MCP の get_command_result
+// 用。WaitCommand がタイムアウトした後に AI が後から取りに来る経路）。
+// 不在は ok=false（エラーにしない＝ConsumePairing 等と同じ規律）。
+func (c *Client) GetCommand(ctx context.Context, pc, id string) (Command, bool, error) {
+	snap, err := c.cmdCol(pc).Doc(id).Get(ctx)
+	if err != nil || !snap.Exists() {
+		return Command{}, false, nil
+	}
+	var cm Command
+	if e := snap.DataTo(&cm); e != nil {
+		return Command{}, false, e
+	}
+	return cm, true, nil
+}
+
 // RecentCommands は監査表示用に新しい順 n 件（web 用）。
 func (c *Client) RecentCommands(ctx context.Context, pc string, n int) ([]Command, error) {
 	docs, err := c.cmdCol(pc).OrderBy("ts", firestore.Desc).

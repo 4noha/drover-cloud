@@ -89,6 +89,37 @@ func TestPushCommandArgsRoundTripAndWaitCommand(t *testing.T) {
 	}
 }
 
+// GetCommand は get_command_result（WaitCommand タイムアウト後の後取得）用。
+// 不在は ok=false でエラーにしない。
+func TestGetCommandReadsSingleDoc(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t, "pc-mcp-get")
+	const pc = "pc-mcp-get"
+
+	id, err := c.PushCommandArgs(ctx, pc, "read-pane", "sid-1", "", "owner@example.com",
+		"mcp", map[string]string{"source": "visible"})
+	if err != nil {
+		t.Fatalf("PushCommandArgs: %v", err)
+	}
+	if _, ok, err := c.GetCommand(ctx, pc, id); err != nil || !ok {
+		t.Fatalf("pending 段階で GetCommand: ok=%v err=%v", ok, err)
+	}
+	if err := c.AckCommand(ctx, id, "done", "ok"); err != nil {
+		t.Fatalf("AckCommand: %v", err)
+	}
+	cm, ok, err := c.GetCommand(ctx, pc, id)
+	if err != nil || !ok {
+		t.Fatalf("Ack後の GetCommand: ok=%v err=%v", ok, err)
+	}
+	if cm.Status != "done" || cm.Detail != "ok" || cm.Args["source"] != "visible" {
+		t.Fatalf("GetCommand の内容が不正: %+v", cm)
+	}
+
+	if _, ok, err := c.GetCommand(ctx, pc, "no-such-id"); err != nil || ok {
+		t.Fatalf("不在 id なのに ok=%v err=%v", ok, err)
+	}
+}
+
 // 未 claim/未 Ack のまま放置すると、WaitCommand はエラーにせず
 // timedOut=true を返す（§3.2「超過時は {status:"pending", command_id} を
 // 返す」の土台。呼び手はこれを使って get_command_result へ切り替える）。

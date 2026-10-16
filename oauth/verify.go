@@ -13,8 +13,9 @@ import (
 
 // VerifiedToken は検証に成功した access token の中身（mcp ツールの認可判定に使う）。
 type VerifiedToken struct {
-	Email  string
-	Scopes map[string]bool
+	Email    string
+	ClientID string // requested_by=mcp:<email>:<client_id> の監査用（§4.3）
+	Scopes   map[string]bool
 }
 
 // HasScope は指定スコープを持つか。
@@ -47,7 +48,7 @@ func (s *Server) Verify(ctx context.Context, authHeader string) (VerifiedToken, 
 	for _, x := range t.Scopes {
 		sc[x] = true
 	}
-	return VerifiedToken{Email: t.Email, Scopes: sc}, true
+	return VerifiedToken{Email: t.Email, ClientID: t.ClientID, Scopes: sc}, true
 }
 
 // RequireBearer は http.HandlerFunc をラップし、未認証/不正トークンに

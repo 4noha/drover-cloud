@@ -120,7 +120,7 @@ func seedAccessToken(t *testing.T, st *state.Client, raw string, scopes []string
 	}
 }
 
-func newTestEnv(t *testing.T) (st *state.Client, as *oauth.Server, ts *httptest.Server) {
+func newTestEnv(t *testing.T, slaveAccess string) (st *state.Client, as *oauth.Server, ts *httptest.Server) {
 	t.Helper()
 	var err error
 	st, err = state.New(context.Background(), emuProject, "pc-mcp-test")
@@ -129,7 +129,7 @@ func newTestEnv(t *testing.T) (st *state.Client, as *oauth.Server, ts *httptest.
 	}
 	t.Cleanup(func() { st.Close() })
 	as = oauth.New(st, webauth.NewSigner("test-secret"), "test-client-id", testEmail, nil, "", "https://self.example.com")
-	ms := New(st, as)
+	ms := New(st, as, slaveAccess)
 	ts = httptest.NewServer(ms.Handler())
 	t.Cleanup(ts.Close)
 	return st, as, ts
@@ -163,7 +163,7 @@ func rpcCall(t *testing.T, ts *httptest.Server, bearer string, method string, pa
 
 func TestUnauthenticatedRejected(t *testing.T) {
 	needEmu(t)
-	_, _, ts := newTestEnv(t)
+	_, _, ts := newTestEnv(t, "off")
 	_, status := rpcCall(t, ts, "", "tools/list", nil)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("status=%d, want 401", status)
@@ -172,7 +172,7 @@ func TestUnauthenticatedRejected(t *testing.T) {
 
 func TestInitializePingToolsList(t *testing.T) {
 	needEmu(t)
-	st, _, ts := newTestEnv(t)
+	st, _, ts := newTestEnv(t, "off")
 	seedAccessToken(t, st, "tok-basic", []string{"drover.read"})
 
 	out, status := rpcCall(t, ts, "tok-basic", "initialize", map[string]any{})
@@ -195,14 +195,17 @@ func TestInitializePingToolsList(t *testing.T) {
 	}
 	res, _ = out["result"].(map[string]any)
 	tools, _ := res["tools"].([]any)
-	if len(tools) != 5 {
-		t.Fatalf("tools 件数=%d, want 5: %+v", len(tools), tools)
+	// 件数をハードコードせず toolRegistry と一致することだけ見る（ツール追加の
+	// たびにこの数字を書き換える不要な保守コストを避ける。toolDefs に定義を
+	// 足し忘れた/registry に登録を足し忘れた、のどちらのズレも検出する）。
+	if len(tools) != len(toolRegistry) {
+		t.Fatalf("tools 件数=%d, want %d (toolRegistry と不一致): %+v", len(tools), len(toolRegistry), tools)
 	}
 }
 
 func TestToolsCallListMachines(t *testing.T) {
 	needEmu(t)
-	st, _, ts := newTestEnv(t)
+	st, _, ts := newTestEnv(t, "off")
 	seedAccessToken(t, st, "tok-read", []string{"drover.read"})
 
 	if _, err := st.PushStatus(context.Background(), []map[string]any{
@@ -237,7 +240,7 @@ func TestToolsCallListMachines(t *testing.T) {
 
 func TestToolsCallScopeForbidden(t *testing.T) {
 	needEmu(t)
-	st, _, ts := newTestEnv(t)
+	st, _, ts := newTestEnv(t, "off")
 	seedAccessToken(t, st, "tok-noscope", []string{}) // スコープ無し
 
 	out, status := rpcCall(t, ts, "tok-noscope", "tools/call",
@@ -253,7 +256,7 @@ func TestToolsCallScopeForbidden(t *testing.T) {
 
 func TestToolsCallUnknownTool(t *testing.T) {
 	needEmu(t)
-	st, _, ts := newTestEnv(t)
+	st, _, ts := newTestEnv(t, "off")
 	seedAccessToken(t, st, "tok-x", []string{"drover.read"})
 
 	out, status := rpcCall(t, ts, "tok-x", "tools/call",
@@ -269,7 +272,7 @@ func TestToolsCallUnknownTool(t *testing.T) {
 
 func TestRateLimitTrips(t *testing.T) {
 	needEmu(t)
-	st, _, ts := newTestEnv(t)
+	st, _, ts := newTestEnv(t, "off")
 	seedAccessToken(t, st, "tok-rl", []string{"drover.read"})
 
 	hit429 := false
@@ -295,7 +298,7 @@ func TestRateLimitTrips(t *testing.T) {
 
 func TestWaitForStatusImmediateMatch(t *testing.T) {
 	needEmu(t)
-	st, _, ts := newTestEnv(t)
+	st, _, ts := newTestEnv(t, "off")
 	seedAccessToken(t, st, "tok-wait", []string{"drover.input"})
 	if _, err := st.PushStatus(context.Background(), []map[string]any{
 		{"key": "sid-w1", "session_id": "sid-w1", "agent": "claude", "agent_status": "idle"},

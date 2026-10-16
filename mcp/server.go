@@ -27,10 +27,38 @@ type Server struct {
 	st *state.Client
 	as *oauth.Server
 	rl *limiter
+	// slaveAccess は slave（共用 PC）への read_pane/send_input/interrupt の
+	// 許可範囲（env MCP_SLAVE_ACCESS。既定 "off"）。"read"=read_pane のみ、
+	// "full"=両方。drover-cloud-mcp-design.md §4.3「共用PCには他人の作業や
+	// 秘密が映りうる」。
+	slaveAccess string
 }
 
-func New(st *state.Client, as *oauth.Server) *Server {
-	return &Server{st: st, as: as, rl: newLimiter()}
+func New(st *state.Client, as *oauth.Server, slaveAccess string) *Server {
+	if slaveAccess == "" {
+		slaveAccess = "off"
+	}
+	return &Server{st: st, as: as, rl: newLimiter(), slaveAccess: slaveAccess}
+}
+
+// slaveAllowed は pc の role が "slave" のとき need（"read"|"full"）が
+// 許可されているかを判定する。slave でなければ無条件許可。
+func (s *Server) slaveAllowed(ctx context.Context, pc, need string) (bool, error) {
+	role, err := s.st.PCRole(ctx, pc)
+	if err != nil {
+		return false, err
+	}
+	if role != "slave" {
+		return true, nil
+	}
+	switch s.slaveAccess {
+	case "full":
+		return true, nil
+	case "read":
+		return need == "read", nil
+	default: // "off" または未知値は安全側で拒否
+		return false, nil
+	}
 }
 
 // Handler は Bearer 検証込みの /mcp ハンドラ（main.go が mux.Handle("/mcp", ...) する）。
@@ -150,7 +178,7 @@ func (s *Server) handleToolsCall(ctx context.Context, w http.ResponseWriter, req
 		return
 	}
 
-	result, terr := tier.fn(ctx, s.st, p.Arguments)
+	result, terr := tier.fn(ctx, s, p.Arguments)
 
 	// 監査は失敗しても本処理を止めない（鉄則⑤の精神＝silent にはしないが、
 	// 監査書込みの一時障害でユーザー操作まで巻き込まない）。

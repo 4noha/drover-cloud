@@ -85,13 +85,17 @@ func handler() http.Handler {
 					// プレースホルダのままでよい。空なら DCR は全拒否
 					// （oauth.hostAllowed のデフォルト deny）＝安全側。
 					redirectHosts := os.Getenv("MCP_ALLOWED_REDIRECT_HOSTS")
+					// slave（共用PC）への read_pane/send_input の許可範囲。既定off
+					// （§4.3「共用PCには他人の作業や秘密が映りうる」。未設定/未知値は
+					// mcp.New 側で "off" に正規化する＝安全側デフォルト）。
+					slaveAccess := os.Getenv("MCP_SLAVE_ACCESS")
 					as := oauth.New(st, webauth.NewSigner(key), clientID, allowed, nil,
 						redirectHosts, selfBase)
-					ms := mcp.New(st, as)
+					ms := mcp.New(st, as, slaveAccess)
 					mux.Handle("/oauth/", as.Handler())
 					mux.Handle("/.well-known/", as.Handler())
 					mux.Handle("/mcp", ms.Handler())
-					log.Printf("MCP 有効（self=%s, redirect_hosts=%q）", selfBase, redirectHosts)
+					log.Printf("MCP 有効（self=%s, redirect_hosts=%q, slave_access=%q）", selfBase, redirectHosts, slaveAccess)
 				}
 			}
 			return mux
