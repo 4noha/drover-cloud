@@ -2,8 +2,10 @@ package web
 
 // slave の /slave/push 経由での Webhook 代理送信（webhookdispatch.go）を
 // 実 Firestore エミュレータ＋実 HTTP（受信側も httptest）で検証する。
-// 鉄則2: 旧コード（dispatchWebhooksForTransitions 呼び出し自体が無い版）
-// では以下のテストは「受信ゼロ」で FAIL することを実装前に確認済み。
+// TestSlavePushDispatchesWebhookOnTransition は push2 後に waitCount(wr,1)
+// で実際の受信を待つ＝dispatchWebhooksForTransitions 呼び出しを slavePush
+// から外せば必ずタイムアウトで FAIL する構造（git 履歴から旧版に戻しての
+// 実行確認は auto mode の権限分類器に阻まれたため、構造的な保証に留める）。
 
 import (
 	"context"
