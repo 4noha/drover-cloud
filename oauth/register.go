@@ -34,22 +34,50 @@ type registerResponse struct {
 // 数個の文字列で十分収まる。異常に大きい入力を先に撥ねる）。
 const registerBodyMax = 64 * 1024
 
-// hostAllowed は redirect_uri が https かつホスト（・allowlist エントリが
-// パスも指定していればそのパスにも完全一致）が allowlist に一致するかを
-// 検証する。空の allowlist（未設定）は常に拒否＝デフォルト deny。
+// redirectRule は allowlist 1エントリの制約（oauth.go の New がパースする）。
+// port/path は空文字列なら無制限（任意のポート/パスを許可）。
+type redirectRule struct {
+	port string
+	path string
+}
+
+// loopbackHosts はスキーム http を例外的に許可するホスト（ネイティブ/CLI
+// アプリが OS に一時 HTTP サーバーを立ててコールバックを受ける RFC 8252
+// パターン。ループバックは外部ネットワークから到達不可のため https 不要）。
+var loopbackHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
+
+// schemeAllowed はホストに対して許容するスキームを判定する。ループバック
+// 以外は https 必須のまま（デフォルト deny の例外を増やさない）。
+func schemeAllowed(scheme, host string) bool {
+	if loopbackHosts[host] {
+		return scheme == "http" || scheme == "https"
+	}
+	return scheme == "https"
+}
+
+// hostAllowed は redirect_uri のホスト・スキーム（・allowlist エントリが
+// ポート/パスも指定していればそれらにも完全一致）が allowlist に一致するか
+// を検証する。空の allowlist（未設定）は常に拒否＝デフォルト deny。
 func (s *Server) hostAllowed(rawURL string) bool {
 	if len(s.allowedRedirectHosts) == 0 {
 		return false
 	}
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+	if err != nil || u.Hostname() == "" {
 		return false
 	}
-	path, ok := s.allowedRedirectHosts[strings.ToLower(u.Hostname())]
+	host := strings.ToLower(u.Hostname())
+	rule, ok := s.allowedRedirectHosts[host]
 	if !ok {
 		return false
 	}
-	return path == "" || path == u.Path
+	if !schemeAllowed(u.Scheme, host) {
+		return false
+	}
+	if rule.port != "" && u.Port() != rule.port {
+		return false
+	}
+	return rule.path == "" || rule.path == u.Path
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {

@@ -32,11 +32,13 @@ type Server struct {
 	// （env MCP_ALLOWED_REDIRECT_HOSTS、カンマ区切り）。空なら DCR は全拒否
 	// （フィッシング対策のデフォルト deny。未決事項7＝コネクタのコールバック
 	// ホストが判明するまではプレースホルダのまま運用する）。
-	// key はホスト名（小文字）、value は必須パス（空文字列="任意のパスを許可"・
-	// 非空="このパスと完全一致するものだけ許可"）。各エントリは env 側で
-	// "host" または "host/path"（例 "www.cursor.com/agents/mcp/oauth/callback"）
-	// のいずれかで指定する。
-	allowedRedirectHosts map[string]string
+	// key はホスト名（小文字）、value は redirectRule（任意のポート/パス制限）。
+	// 各エントリは env 側で "host"・"host/path"・"host:port"・"host:port/path"
+	// のいずれかで指定する（例 "www.cursor.com/agents/mcp/oauth/callback"・
+	// "localhost:8787/callback"）。スキームは hostAllowed が判定する
+	// （ループバック host=localhost/127.0.0.1/::1 のみ http も許可。
+	// RFC 8252 のネイティブアプリ・パターン。それ以外は https 必須）。
+	allowedRedirectHosts map[string]redirectRule
 	// selfBase はこのサーバー自身の外部 URL（例 "https://host"、末尾 / 無し）。
 	// メタデータ応答・resource パラメータ照合に使う。
 	selfBase string
@@ -45,7 +47,8 @@ type Server struct {
 // New は MCP 認可サーバーを組み立てる。signer/clientID/allowedEmails/gv は
 // 既存 web.New と同じ値を渡す（cookie とログイン許可判定を共有するため）。
 // allowedRedirectHosts は "MCP_ALLOWED_REDIRECT_HOSTS" の値をそのまま渡す
-// （カンマ区切り。各エントリは "host" または "host/path"）。
+// （カンマ区切り。各エントリは "host"・"host/path"・"host:port"・
+// "host:port/path"）。
 func New(st *state.Client, signer *webauth.Signer, clientID, allowedEmails string,
 	gv webauth.GoogleVerifier, allowedRedirectHosts, selfBase string) *Server {
 	am := map[string]bool{}
@@ -54,18 +57,22 @@ func New(st *state.Client, signer *webauth.Signer, clientID, allowedEmails strin
 			am[e] = true
 		}
 	}
-	rh := map[string]string{}
+	rh := map[string]redirectRule{}
 	for _, h := range strings.Split(allowedRedirectHosts, ",") {
 		h = strings.TrimSpace(h)
 		if h == "" {
 			continue
 		}
-		host, path := h, ""
+		hostPort, path := h, ""
 		if i := strings.Index(h, "/"); i >= 0 {
-			host, path = h[:i], h[i:]
+			hostPort, path = h[:i], h[i:]
+		}
+		host, port := hostPort, ""
+		if i := strings.LastIndex(hostPort, ":"); i >= 0 {
+			host, port = hostPort[:i], hostPort[i+1:]
 		}
 		if host = strings.ToLower(host); host != "" {
-			rh[host] = path
+			rh[host] = redirectRule{port: port, path: path}
 		}
 	}
 	if gv == nil {

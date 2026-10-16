@@ -145,16 +145,16 @@ func TestPKCEVerify(t *testing.T) {
 }
 
 func TestHostAllowedDefaultDeny(t *testing.T) {
-	s := &Server{allowedRedirectHosts: map[string]string{}}
+	s := &Server{allowedRedirectHosts: map[string]redirectRule{}}
 	if s.hostAllowed("https://grok.example.com/cb") {
 		t.Fatal("allowlist 空なのに許可された（デフォルト deny が壊れている）")
 	}
-	s2 := &Server{allowedRedirectHosts: map[string]string{"grok.example.com": ""}}
+	s2 := &Server{allowedRedirectHosts: map[string]redirectRule{"grok.example.com": {}}}
 	if !s2.hostAllowed("https://grok.example.com/cb") {
 		t.Fatal("allowlist 一致のホストが拒否された（パス指定なし＝任意パス許可のはず）")
 	}
-	if s2.hostAllowed("http://grok.example.com/cb") { // https 必須
-		t.Fatal("http（非TLS）が許可された")
+	if s2.hostAllowed("http://grok.example.com/cb") { // https 必須（非ループバック）
+		t.Fatal("非ループバックホストで http（非TLS）が許可された")
 	}
 	if s2.hostAllowed("https://evil.example.com/cb") {
 		t.Fatal("allowlist に無いホストが許可された")
@@ -162,7 +162,7 @@ func TestHostAllowedDefaultDeny(t *testing.T) {
 
 	// パス指定ありのエントリ（例: www.cursor.com/agents/mcp/oauth/callback）は
 	// そのパスと完全一致する場合のみ許可する。
-	s3 := &Server{allowedRedirectHosts: map[string]string{"www.cursor.com": "/agents/mcp/oauth/callback"}}
+	s3 := &Server{allowedRedirectHosts: map[string]redirectRule{"www.cursor.com": {path: "/agents/mcp/oauth/callback"}}}
 	if !s3.hostAllowed("https://www.cursor.com/agents/mcp/oauth/callback") {
 		t.Fatal("パス完全一致なのに拒否された")
 	}
@@ -171,6 +171,36 @@ func TestHostAllowedDefaultDeny(t *testing.T) {
 	}
 	if s3.hostAllowed("https://www.cursor.com/") {
 		t.Fatal("パス指定ありのエントリでルートパスが許可された")
+	}
+
+	// ループバック（localhost/127.0.0.1/::1）はネイティブアプリ・パターン
+	// （RFC 8252）として http も許可する。ポート指定ありのエントリはその
+	// ポートと完全一致する場合のみ許可する。
+	s4 := &Server{allowedRedirectHosts: map[string]redirectRule{"localhost": {port: "8787", path: "/callback"}}}
+	if !s4.hostAllowed("http://localhost:8787/callback") {
+		t.Fatal("ループバック+ポート+パス完全一致なのに拒否された")
+	}
+	if !s4.hostAllowed("https://localhost:8787/callback") { // https も当然許可
+		t.Fatal("ループバックで https が拒否された")
+	}
+	if s4.hostAllowed("http://localhost:9999/callback") {
+		t.Fatal("ポート不一致なのに許可された")
+	}
+	if s4.hostAllowed("http://localhost:8787/other") {
+		t.Fatal("パス不一致なのに許可された")
+	}
+	if s4.hostAllowed("http://127.0.0.1:8787/callback") {
+		t.Fatal("allowlist に無いホスト（127.0.0.1はlocalhostとは別エントリ）が許可された")
+	}
+	// ループバックでも allowlist に無ければ拒否（デフォルト deny は不変）。
+	s5 := &Server{allowedRedirectHosts: map[string]redirectRule{"grok.example.com": {}}}
+	if s5.hostAllowed("http://localhost:1234/cb") {
+		t.Fatal("localhost が allowlist に無いのに許可された")
+	}
+	// 非ループバックホストでは http は常に拒否（ポート/パスが一致していても）。
+	s6 := &Server{allowedRedirectHosts: map[string]redirectRule{"grok.example.com": {port: "8787"}}}
+	if s6.hostAllowed("http://grok.example.com:8787/cb") {
+		t.Fatal("非ループバックで http が許可された（https 必須が壊れている）")
 	}
 }
 
