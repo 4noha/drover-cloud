@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"html"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -130,7 +131,11 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if !redirectOK {
 		// redirect_uri 自体が信用できないので、ここへは絶対にリダイレクトしない
-		// （エラーをこの画面で直接返す。RFC 6749 の既定挙動）。
+		// （エラーをこの画面で直接返す。RFC 6749 の既定挙動）。register() の
+		// ホスト拒否と同じ理由でログに出す（owner が登録済み redirect_uris と
+		// 実際に送られてきた値のズレを追えるように）。
+		log.Printf("oauth/authorize: 拒否 client_id=%q redirect_uri=%q（登録済み redirect_uris に無い: %v）",
+			p.ClientID, p.RedirectURI, client.RedirectURIs)
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "redirect_uri が未登録")
 		return
 	}

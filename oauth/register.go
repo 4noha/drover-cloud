@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -62,6 +63,12 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, u := range req.RedirectURIs {
 		if !s.hostAllowed(u) {
+			// MCP_ALLOWED_REDIRECT_HOSTS は未決事項7（コネクタのコールバック
+			// ホストが事前に分からない）のため空運用がある。拒否した
+			// redirect_uri を Cloud Run ログに出し、owner が実ホストを
+			// 確認してから allowlist へ追加できるようにする。
+			log.Printf("oauth/register: 拒否 client_name=%q redirect_uri=%q（MCP_ALLOWED_REDIRECT_HOSTS に無い）",
+				req.ClientName, u)
 			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri",
 				"redirect_uri のホストが MCP_ALLOWED_REDIRECT_HOSTS に無い: "+u)
 			return
