@@ -294,6 +294,58 @@ function setupAdd() {
 main();
 setupAdd();
 setupPush();
+setupWebhook();
+
+// セッション状態 Webhook 通知の設定パネル。GET/POST /api/webhook。
+// header_secret は保存後サーバーが絶対に返さない（wh-secret は常に空欄で
+// 始まり、空のまま保存すると既存値を維持する＝サーバー側の仕様）。
+async function setupWebhook() {
+  const btn = $("webhookbtn");
+  const panel = $("webhookpanel");
+  if (!btn || !panel) return;
+  const enabled = $("wh-enabled"), url = $("wh-url"), hname = $("wh-header-name"),
+    secret = $("wh-secret"), secretState = $("wh-secret-state"), status = $("wh-status");
+
+  async function load() {
+    try {
+      const cfg = await jget("/api/webhook");
+      enabled.checked = !!cfg.enabled;
+      url.value = cfg.url || "";
+      hname.value = cfg.header_name || "";
+      secret.value = "";
+      secretState.textContent = cfg.has_secret ? "（設定済み）" : "（未設定）";
+    } catch (e) {
+      status.textContent = "読み込み失敗: " + e.message;
+    }
+  }
+
+  btn.onclick = () => {
+    const show = panel.style.display === "none";
+    panel.style.display = show ? "block" : "none";
+    if (show) load();
+  };
+
+  $("wh-save").onclick = async () => {
+    status.textContent = "保存中…";
+    try {
+      const r = await fetch("/api/webhook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: enabled.checked, url: url.value,
+          header_name: hname.value, header_secret: secret.value,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ("status " + r.status));
+      status.textContent = "保存しました";
+      await load();
+      setTimeout(() => { status.textContent = ""; }, 2500);
+    } catch (e) {
+      status.textContent = "エラー: " + e.message;
+    }
+  };
+}
 
 // Web Push（タスク完了通知）: herdr のネイティブ agent_status 検出
 // （producer.go が working→idle/done/blocked を Firestore へ書く）を

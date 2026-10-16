@@ -77,6 +77,28 @@ const devicesHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  <button id="pushbtn" style="display:none;padding:8px 14px;font:14px system-ui;
   background:#0e7490;color:#fff;border:0;border-radius:6px;cursor:pointer;
   margin-left:8px">🔔 タスク完了 push 通知を有効化</button>
+ <button id="webhookbtn" style="padding:8px 14px;font:14px system-ui;
+  background:#334155;color:#fff;border:0;border-radius:6px;cursor:pointer;
+  margin-left:8px">⚙ Webhook通知設定</button>
+ <div id="webhookpanel" style="display:none;background:#17171b;
+  border:1px solid #2a2a30;border-radius:8px;padding:14px 16px;margin-top:12px;
+  max-width:460px">
+  <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px">
+   <input type="checkbox" id="wh-enabled"> 有効にする（セッションが完了/確認待ちになったら通知）
+  </label>
+  <label style="display:block;font-size:12px;color:#9aa;margin-bottom:4px">Webhook URL（https のみ）</label>
+  <input id="wh-url" type="url" placeholder="https://..." style="width:100%;box-sizing:border-box;
+   padding:6px 8px;margin-bottom:10px;background:#0d0d0f;color:#e6e6e6;border:1px solid #2a2a30;border-radius:6px">
+  <label style="display:block;font-size:12px;color:#9aa;margin-bottom:4px">ヘッダー名</label>
+  <input id="wh-header-name" type="text" placeholder="X-Webhook-Secret" style="width:100%;box-sizing:border-box;
+   padding:6px 8px;margin-bottom:10px;background:#0d0d0f;color:#e6e6e6;border:1px solid #2a2a30;border-radius:6px">
+  <label style="display:block;font-size:12px;color:#9aa;margin-bottom:4px">ヘッダー値（シークレット。保存後は表示されません<span id="wh-secret-state"></span>）</label>
+  <input id="wh-secret" type="password" placeholder="変更する場合のみ入力" style="width:100%;box-sizing:border-box;
+   padding:6px 8px;margin-bottom:10px;background:#0d0d0f;color:#e6e6e6;border:1px solid #2a2a30;border-radius:6px">
+  <button id="wh-save" style="padding:6px 14px;font:13px system-ui;background:#2563eb;color:#fff;
+   border:0;border-radius:6px;cursor:pointer">保存</button>
+  <span id="wh-status" style="margin-left:10px;font-size:12px"></span>
+ </div>
  <pre id="enroll" style="display:none;white-space:pre-wrap;background:#17171b;
   border:1px solid #2a2a30;border-radius:8px;padding:12px;margin-top:12px;
   color:#cde;font-size:12px"></pre>
