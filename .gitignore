@@ -5,3 +5,6 @@ sa.json
 *.sa.json
 web_signing_key
 .env
+
+# === エージェントのローカル設定(PC ごとの判断なので載せない) ===
+.codex/
