@@ -59,10 +59,17 @@ if [[ ! -s "$KEYF" ]]; then
   openssl rand -hex 32 > "$KEYF"; chmod 600 "$KEYF"
 fi
 WKEY="$(cat "$KEYF")"
+# ⚠ --update-env-vars（マージ）を使うこと。--set-env-vars（丸ごと置換）だと
+#   既存サービスへ再実行した時に GOOGLE_OAUTH_CLIENT_ID/ALLOWED_EMAILS/
+#   ENROLL_SA_JSON_B64/FIREBASE_*（SETUP.md 手順 2-4 で後から足した分）が
+#   消え、Web UI が丸ごと無効化される（2026-09-28 実際に事故った。本番で
+#   Web UI が落ち、直前リビジョンの env を掘って復元する羽目になった）。
+#   この 2 キーだけならどちらでも新規サービスは動くが、既存サービスへの
+#   再実行を常に安全にするため --update-env-vars で統一する。
 gcloud run deploy "$SERVICE" --project="$PROJECT" --region="$REGION" \
   --image="$IMG" --min-instances=0 --max-instances=4 \
   --cpu-throttling --timeout=3600 --allow-unauthenticated --port=8080 \
-  --set-env-vars="GCP_PROJECT=${PROJECT},WEB_SIGNING_KEY=${WKEY}"
+  --update-env-vars="GCP_PROJECT=${PROJECT},WEB_SIGNING_KEY=${WKEY}"
 
 URL="$(gcloud run services describe "$SERVICE" --project="$PROJECT" \
   --region="$REGION" --format='value(status.url)')"
