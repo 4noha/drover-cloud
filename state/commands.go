@@ -209,8 +209,8 @@ func (c *Client) PushCommandArgs(ctx context.Context, pc, cmd, sid, agent, reque
 // fn は claim 成功（pending→running を transaction で1度だけ）した命令
 // のみ受ける＝Snapshot 再配信や複数 agent でも二重実行しない。
 func (c *Client) WatchCommands(ctx context.Context, fn func(Command)) error {
-	return keepSubscribed(ctx, func() (func() error, func()) {
-		it := c.cmdCol(c.pcID).Where("status", "==", "pending").Snapshots(ctx)
+	return keepSubscribed(ctx, watchMaxLifetime, func(subCtx context.Context) (func() error, func()) {
+		it := c.cmdCol(c.pcID).Where("status", "==", "pending").Snapshots(subCtx)
 		pump := func() error {
 			for {
 				qs, err := it.Next()
@@ -383,8 +383,8 @@ func (c *Client) ClaimPendingCommands(ctx context.Context, pc string) ([]Command
 // （**claim はしない**＝relay の long-poll hold 用。claim は handler が
 // ClaimPendingCommands で行い、claim と配信を原子的に一致させる）。
 func (c *Client) WatchPendingCommands(ctx context.Context, pc string, notify func()) error {
-	return keepSubscribed(ctx, func() (func() error, func()) {
-		it := c.cmdCol(pc).Where("status", "==", "pending").Snapshots(ctx)
+	return keepSubscribed(ctx, watchMaxLifetime, func(subCtx context.Context) (func() error, func()) {
+		it := c.cmdCol(pc).Where("status", "==", "pending").Snapshots(subCtx)
 		pump := func() error {
 			for {
 				qs, err := it.Next()

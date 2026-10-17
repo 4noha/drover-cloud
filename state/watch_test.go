@@ -37,15 +37,17 @@ func TestKeepSubscribedResubscribesAndNeverFatal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var subs, stops int32
-	subscribe := func() (func() error, func()) {
+	subscribe := func(context.Context) (func() error, func()) {
 		atomic.AddInt32(&subs, 1)
 		pump := func() error { return done } // 即終端（ストリーム終端を模倣）
 		stop := func() { atomic.AddInt32(&stops, 1) }
 		return pump, stop
 	}
 
+	// maxLifetime=0＝無期限（この test は「pump が自発的に終端したら再購読
+	// する」経路の検証に専念させる。watchdog 強制終端の検証は別 test）。
 	ret := make(chan error, 1)
-	go func() { ret <- keepSubscribed(ctx, subscribe) }()
+	go func() { ret <- keepSubscribed(ctx, 0, subscribe) }()
 
 	// 終端を返し続けても死なず再購読し続けること（>=3 回）。
 	dl := time.Now().Add(6 * time.Second)
@@ -79,7 +81,8 @@ func TestKeepSubscribedResubscribesAndNeverFatal(t *testing.T) {
 
 	// 旧実装はこの fake で初回終端を致命 return（＝Windows で agent 死）。
 	// これが「修正前は赤」の機械的証明。
-	if e := oldStyleWatch(context.Background(), subscribe); e != done {
+	oldSubscribe := func() (func() error, func()) { return subscribe(context.Background()) }
+	if e := oldStyleWatch(context.Background(), oldSubscribe); e != done {
 		t.Fatalf("旧実装が致命 return しない＝回帰再現不能（想定外）: %v", e)
 	}
 }
@@ -88,7 +91,7 @@ func TestKeepSubscribedCtxAlreadyDoneNoSubscribe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var subs int32
-	err := keepSubscribed(ctx, func() (func() error, func()) {
+	err := keepSubscribed(ctx, watchMaxLifetime, func(context.Context) (func() error, func()) {
 		atomic.AddInt32(&subs, 1)
 		return func() error { return nil }, func() {}
 	})
@@ -97,5 +100,49 @@ func TestKeepSubscribedCtxAlreadyDoneNoSubscribe(t *testing.T) {
 	}
 	if subs != 0 {
 		t.Fatalf("ctx 既終了なのに購読した: subs=%d", subs)
+	}
+}
+
+// TestKeepSubscribedForcesResubscribeOnSilentHang は 2026-10-17 22:40 JST の
+// 実インシデント（commands watcher が無言ハングし90分超復旧しなかった）の
+// 回帰検知。pump が subCtx.Done() まで一切 return しない（ストリームが
+// エラーも返さず無言で死ぬ状況を模倣）場合でも、maxLifetime 経過で
+// 強制終端→再購読されること。修正前（watchdog 無し）は pump が永遠に
+// ブロックし続けるため、このテストは旧コードで確実にタイムアウトする。
+func TestKeepSubscribedForcesResubscribeOnSilentHang(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var subs int32
+	subscribe := func(subCtx context.Context) (func() error, func()) {
+		atomic.AddInt32(&subs, 1)
+		pump := func() error {
+			<-subCtx.Done() // 無言ハング: subCtx が強制終端されるまで戻らない
+			return subCtx.Err()
+		}
+		return pump, func() {}
+	}
+
+	const shortLifetime = 50 * time.Millisecond
+	ret := make(chan error, 1)
+	go func() { ret <- keepSubscribed(ctx, shortLifetime, subscribe) }()
+
+	dl := time.Now().Add(3 * time.Second)
+	for atomic.LoadInt32(&subs) < 3 {
+		if time.Now().After(dl) {
+			t.Fatalf("無言ハングから自動再購読されない（subs=%d）＝watchdog未動作（真因未修正）",
+				atomic.LoadInt32(&subs))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case e := <-ret:
+		if e != nil {
+			t.Fatalf("ctx 終了時の戻り値が nil でない: %v", e)
+		}
+	case <-time.After(shortLifetime + 3*time.Second):
+		t.Fatal("ctx 終了後も keepSubscribed が戻らない")
 	}
 }

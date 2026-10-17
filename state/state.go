@@ -266,8 +266,8 @@ func (c *Client) DeletePCByID(ctx context.Context, pcID string) error {
 // クリーンに戻る。連続変更はバースト的に来るので呼び出し側で冪等な
 // reconcile を行うこと。
 func (c *Client) WatchSessions(ctx context.Context, cb func()) error {
-	return keepSubscribed(ctx, func() (func() error, func()) {
-		it := c.fs.CollectionGroup("sessions").Snapshots(ctx)
+	return keepSubscribed(ctx, watchMaxLifetime, func(subCtx context.Context) (func() error, func()) {
+		it := c.fs.CollectionGroup("sessions").Snapshots(subCtx)
 		pump := func() error {
 			for {
 				if _, err := it.Next(); err != nil {
@@ -437,8 +437,8 @@ func (c *Client) Wake(ctx context.Context, targetPC, sid string) error {
 // 変更ごとに cb(sid) を呼ぶ。ctx 終了でクリーンに戻る。これが
 // 「PC 発 idle gRPC stream」で NAT を越える wake 受信経路。
 func (c *Client) WatchWake(ctx context.Context, cb func(sid string)) error {
-	return keepSubscribed(ctx, func() (func() error, func()) {
-		it := c.fs.Collection("wake").Doc(c.pcID).Snapshots(ctx)
+	return keepSubscribed(ctx, watchMaxLifetime, func(subCtx context.Context) (func() error, func()) {
+		it := c.fs.Collection("wake").Doc(c.pcID).Snapshots(subCtx)
 		pump := func() error {
 			for {
 				snap, err := it.Next()

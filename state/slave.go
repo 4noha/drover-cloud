@@ -153,8 +153,8 @@ func (c *Client) SlaveGrantValid(ctx context.Context, pc, sid string) bool {
 // WatchWakeFor は wake/{pc} を real-time 監視（WatchWake の pc 明示版）。
 // slave 用の /slave/wake long-poll ハンドラが 1 回分の wake を捕まえるために使う。
 func (c *Client) WatchWakeFor(ctx context.Context, pc string, cb func(sid string)) error {
-	return keepSubscribed(ctx, func() (func() error, func()) {
-		it := c.fs.Collection("wake").Doc(pc).Snapshots(ctx)
+	return keepSubscribed(ctx, watchMaxLifetime, func(subCtx context.Context) (func() error, func()) {
+		it := c.fs.Collection("wake").Doc(pc).Snapshots(subCtx)
 		pump := func() error {
 			for {
 				snap, err := it.Next()
