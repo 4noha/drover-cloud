@@ -9,6 +9,23 @@ import (
 	"time"
 )
 
+// herdr は CLI エージェントの作業完了を "done" ではなく "idle" で報告する
+// （herdr CLI ヘルプの実文言: "done is a UI attention state; use idle for CLI
+// agent completion waits"）。NotifyStates にこれが欠けていると、通常の完了
+// 遷移（working→idle）を一切通知できない（2026-10-17 の調査で発見した実バグ）。
+func TestNotifyStatesIncludesIdle(t *testing.T) {
+	for _, want := range []string{"idle", "done", "blocked"} {
+		if !NotifyStates[want] {
+			t.Errorf("NotifyStates[%q] = false, want true", want)
+		}
+	}
+	for _, notWant := range []string{"working", "unknown", ""} {
+		if NotifyStates[notWant] {
+			t.Errorf("NotifyStates[%q] = true, want false", notWant)
+		}
+	}
+}
+
 func TestValidate(t *testing.T) {
 	cases := []struct {
 		name    string

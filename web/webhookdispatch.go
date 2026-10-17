@@ -34,10 +34,12 @@ func (s *Server) sessionStatusByKey(ctx context.Context, pc string) map[string]s
 }
 
 // dispatchWebhooksForTransitions は push 前（old）と push しようとしている
-// 生セッション（sessions）を比較し、done/blocked へ**新しく**遷移したものだけ
-// 非同期で送る（同じ状態への重複は送らない）。Webhook が無効なら何もしない。
-// 送信失敗は本処理（push 応答）をブロックしない＝goroutine 起動＋ログのみ
-// （鉄則5「silent にしない」はログに残すことで満たす）。
+// 生セッション（sessions）を比較し、**working から** NotifyStates（idle/done/
+// blocked）へ**新しく**遷移したものだけ非同期で送る（同じ状態への重複は送らない）。
+// 遷移元を working に限る理由は cmd/herdr-drover/notify.go の taskNotifier と
+// 同じ: unknown 等からの遷移は一時的な検出揺れで誤通知しないため。Webhook が
+// 無効なら何もしない。送信失敗は本処理（push 応答）をブロックしない＝goroutine
+// 起動＋ログのみ（鉄則5「silent にしない」はログに残すことで満たす）。
 func (s *Server) dispatchWebhooksForTransitions(pc string, old map[string]string, sessions []map[string]any) {
 	cfg, err := s.st.GetWebhookConfig(context.Background())
 	if err != nil || !cfg.Enabled {
@@ -57,7 +59,9 @@ func (s *Server) dispatchWebhooksForTransitions(pc string, old map[string]string
 		// （cmd/herdr-drover/notify.go の taskNotifier と同じ安全側の考え方。
 		// slave はこの old が Firestore 由来で daemon 再起動でも消えないため
 		// 実際には影響しないが、master の実装と対称にして挙動を揃える）。
-		if !known || oldStatus == newStatus {
+		// 遷移元が working であることも要求する（taskNotifier と同じ規律。
+		// unknown→blocked 等の検出揺れを完了通知として誤送信しない）。
+		if !known || oldStatus != "working" || oldStatus == newStatus {
 			continue
 		}
 		p := webhook.Payload{

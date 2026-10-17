@@ -37,8 +37,15 @@ type Payload struct {
 	At         string `json:"at"`
 }
 
-// NotifyStates は通知対象の遷移先状態（仕様: done/blocked）。
-var NotifyStates = map[string]bool{"done": true, "blocked": true}
+// NotifyStates は通知対象の遷移先状態。herdr は CLI エージェントの作業完了を
+// "done" ではなく "idle" で表す（herdr CLI ヘルプの実文言: "done is a UI
+// attention state; use idle for CLI agent completion waits"。内部の
+// ManifestState にも done という値は無い＝実測で "done" は到達しないに等しい）。
+// 呼び手（cmd/herdr-drover/webhooknotify.go・web/webhookdispatch.go）は
+// 遷移元が "working" の時だけこの集合と照合すること（cmd/herdr-drover/notify.go
+// の taskNotifyState と同じ規律。unknown からの遷移は一時的な検出揺れで誤通知
+// しないために除外する）。
+var NotifyStates = map[string]bool{"idle": true, "done": true, "blocked": true}
 
 const sendTimeout = 10 * time.Second
 

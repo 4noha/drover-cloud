@@ -125,13 +125,15 @@ func TestSlavePushDispatchesWebhookOnTransition(t *testing.T) {
 		t.Fatalf("初回push（working）で送信された: %d件", wr.count())
 	}
 
-	// 2回目: working→done（既知の旧状態から新状態への遷移）＝送信される。
-	if code, _ := req(t, "POST", ts.URL+"/slave/push", tok, map[string]any{"sessions": []any{sess("done")}}); code != 200 {
+	// 2回目: working→idle（CLI エージェントの通常の作業完了。herdr は "done"
+	// ではなく "idle" で報告する＝webhook.NotifyStates のコメント参照）＝
+	// 送信される。
+	if code, _ := req(t, "POST", ts.URL+"/slave/push", tok, map[string]any{"sessions": []any{sess("idle")}}); code != 200 {
 		t.Fatal("push2 失敗")
 	}
 	waitCount(t, wr, 1)
 	p := wr.last()
-	if p.PC != pc || p.SID != "sidA" || p.OldStatus != "working" || p.NewStatus != "done" ||
+	if p.PC != pc || p.SID != "sidA" || p.OldStatus != "working" || p.NewStatus != "idle" ||
 		p.WindowName != "claude" || p.Agent != "claude" || p.Cwd != "/x/proj" || p.At == "" {
 		t.Fatalf("payload 不正: %+v", p)
 	}
@@ -139,22 +141,41 @@ func TestSlavePushDispatchesWebhookOnTransition(t *testing.T) {
 		t.Fatalf("検証ヘッダが届いていない: %q", wr.hdr)
 	}
 
-	// 3回目: done→done（同一状態の重複）＝送信されない。
-	if code, _ := req(t, "POST", ts.URL+"/slave/push", tok, map[string]any{"sessions": []any{sess("done")}}); code != 200 {
+	// 3回目: idle→idle（同一状態の重複）＝送信されない。
+	if code, _ := req(t, "POST", ts.URL+"/slave/push", tok, map[string]any{"sessions": []any{sess("idle")}}); code != 200 {
 		t.Fatal("push3 失敗")
 	}
 	time.Sleep(300 * time.Millisecond)
 	if wr.count() != 1 {
-		t.Fatalf("同一状態（done→done）なのに再送信された: %d件", wr.count())
+		t.Fatalf("同一状態（idle→idle）なのに再送信された: %d件", wr.count())
 	}
 
-	// 4回目: done→blocked（別の通知対象状態への遷移）＝再度送信される。
+	// 4回目: idle→blocked（通知対象状態への遷移だが、遷移元が working では
+	// ない）＝taskNotifier と同じ working 起点の規律により送信されない。
 	if code, _ := req(t, "POST", ts.URL+"/slave/push", tok, map[string]any{"sessions": []any{sess("blocked")}}); code != 200 {
 		t.Fatal("push4 失敗")
 	}
+	time.Sleep(300 * time.Millisecond)
+	if wr.count() != 1 {
+		t.Fatalf("working 起点でない遷移（idle→blocked）なのに送信された: %d件", wr.count())
+	}
+
+	// 5回目: blocked→working（working 自体は通知対象外）＝送信されない。
+	if code, _ := req(t, "POST", ts.URL+"/slave/push", tok, map[string]any{"sessions": []any{sess("working")}}); code != 200 {
+		t.Fatal("push5 失敗")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if wr.count() != 1 {
+		t.Fatalf("working への遷移なのに送信された: %d件", wr.count())
+	}
+
+	// 6回目: working→blocked（working 起点＝送信される）。
+	if code, _ := req(t, "POST", ts.URL+"/slave/push", tok, map[string]any{"sessions": []any{sess("blocked")}}); code != 200 {
+		t.Fatal("push6 失敗")
+	}
 	waitCount(t, wr, 2)
-	if p2 := wr.last(); p2.OldStatus != "done" || p2.NewStatus != "blocked" {
-		t.Fatalf("done→blocked の payload 不正: %+v", p2)
+	if p2 := wr.last(); p2.OldStatus != "working" || p2.NewStatus != "blocked" {
+		t.Fatalf("working→blocked の payload 不正: %+v", p2)
 	}
 }
 
@@ -186,7 +207,7 @@ func TestSlavePushNoDispatchWhenWebhookDisabled(t *testing.T) {
 	wr := newWebhookReceiver(t)
 	sess := map[string]any{"key": "sidB", "session_id": "sidB", "agent_status": "working"}
 	req(t, "POST", ts.URL+"/slave/push", tok, map[string]any{"sessions": []any{sess}})
-	sess["agent_status"] = "done"
+	sess["agent_status"] = "idle"
 	req(t, "POST", ts.URL+"/slave/push", tok, map[string]any{"sessions": []any{sess}})
 	time.Sleep(300 * time.Millisecond)
 	if wr.count() != 0 {
