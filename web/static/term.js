@@ -106,6 +106,21 @@ function cmReconnectGate(s) {
   return { connect: true, attempts: s.attempts + 1 };
 }
 
+// cmWatchGate: 監視再接続して良いかの純粋判定（node で決定論テスト）。
+// BUG-4 の対処。「出力が再開した」を伝える push が無いので、**見ている間だけ**
+// 張り直す。維持ではなく張り直しなのが要点（near-$0 の設計を壊さない）。
+//   ・visible でない → 張らない（裏に回れば即コスト 0）
+//   ・is_active でない → 張らない（止まった相手を起こさない）
+//   ・CONNECTING(0)/OPEN(1) → 張らない（多重接続は relay takeover の無駄打ち）
+// backoff は呼び先の cmReconnectGate が持つので、ここでは見ない。
+// s: {visible:bool, active:bool, wsState:-1|0..3}
+function cmWatchGate(s) {
+  if (!s.visible) return false;
+  if (!s.active) return false;
+  if (s.wsState === 0 || s.wsState === 1) return false;
+  return true;
+}
+
 // アカウント内の全コンソールを端末一覧と同じ順で平坦化（pc→session）。
 // ‹/› ボタンで前後のコンソールへ location 遷移して切り替える。
 async function buildConsoleList() {
@@ -184,6 +199,14 @@ function run() {
   let attempts = 0, lastAttemptAt = 0;
   let inputQ = [], inputQBytes = 0; // 未接続中の入力（接続後に送出）
   const QMAX = 9 << 20; // 画像 8MB + キー入力余裕
+  // BUG-4: セッションが動いているか（status doc の is_active）。監視再接続の
+  // 条件に使う。push が使えない環境では false のままで従来動作に degrade。
+  let sessionActive = false;
+  // 相手 PC が画像貼付を受け付けるか（status doc の image_paste）。
+  // null=未確定（doc 未着 or push 無効）／true=対応／false=無効。
+  // 従来は送信キューに載せただけで「Ctrl+V 注入」と表示していたが、drover は
+  // 既定で IMAGE frame を破棄する＝**成功表示が嘘になっていた**。これで事実を出す。
+  let imagePasteOK = null;
 
   const wsState = () => (ws ? ws.readyState : -1);
 
@@ -331,11 +354,54 @@ function run() {
       const app = appM.initializeApp(config);
       await authM.signInWithCustomToken(authM.getAuth(app), token);
       const db = fsM.getFirestore(app);
-      fsM.onSnapshot(fsM.doc(db, "pcs", pc, "sessions", sid), () => {
+      fsM.onSnapshot(fsM.doc(db, "pcs", pc, "sessions", sid), (snap) => {
+        // BUG-4: doc の is_active を拾って監視再接続の条件にする。
+        // 「動いている」→ 見ている間は張り直す／「止まった」→ 張らない。
+        try {
+          const d = (snap && typeof snap.data === "function") ? snap.data() : null;
+          if (d) {
+            sessionActive = d.is_active === true;
+            // producer は有効な時だけ image_paste を載せる（無効は「載せない」
+            // で表現＝後方互換）。doc が来た時点で false は確定情報。
+            imagePasteOK = d.image_paste === true;
+          }
+        } catch (e) { /* 取れなくても push 再接続は従来どおり効く */ }
         requestConnect("更新push");
       });
     } catch (e) { /* push なしでも従来どおり動く */ }
   })();
+
+  // ---- BUG-4: 「出力が再開した」を伝える経路が無い問題への対処。
+  // status doc は content_hash が変わった時しか書かれず、その中身に出力は
+  // 含まれない（producer が揮発フィールドを載せないのは near-$0 の設計）。
+  // よってエージェントが working のまま 30s 以上黙る（＝思考中）と PC 側
+  // bridge の DefaultIdle=30s で線が閉じ、**出力が再開しても push が飛ばない**
+  // ＝ブラウザは張り直さない。ユーザから見ると「途中でフッと止まる」。
+  //
+  // 方針は「接続を維持する」ではなく「**見ている間だけ張り直す**」。
+  //   ・タブが visible でない → 何もしない（裏に回れば即座にコスト 0）
+  //   ・セッションが is_active でない → 何もしない（止まった相手は起こさない）
+  // 上記 2 条件を満たす時だけ再接続を試みる＝コストが出るのは
+  // 「人が実際に動いているセッションを見ている間」に限られる。
+  // 実際の再接続頻度は PC 側 idle(30s) 律速で概ね 30s に 1 回。
+  // 張り直し自体は既存経路のまま: /ws ハンドラが st.Wake を撃って PC を
+  // 起こし、onopen の resizeFrame が完全 frame の catch-up を兼ねる。
+  // 連打は cmReconnectGate の backoff が抑える。
+  const WATCH_TICK_MS = 5000;
+  setInterval(() => {
+    if (cmWatchGate({
+      visible: document.visibilityState === "visible",
+      active: sessionActive,
+      wsState: wsState(),
+    })) requestConnect("watch");
+  }, WATCH_TICK_MS);
+
+  // タブを表に戻した瞬間は tick を待たずに張り直す（裏で切れたまま戻ると
+  // 最大 WATCH_TICK_MS 待たされるため）。is_active 不明でも復帰させたいので
+  // ここは visible だけを条件にする（1 回きり＝連打にならない）。
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") requestConnect("visible");
+  });
 
   term.onData((d) => { sendBytes(enc.encode(d)); });
 
@@ -356,12 +422,30 @@ function run() {
   // 入力経路・サーバ無改変）。矢印は CSI 標準シーケンス（ESC[A/B/C/D。
   // claude=Ink は CSI/SS3 両対応）。position:fixed なので native スクロール
   // に追従し、grip ドラッグで移動・位置は localStorage に記憶する。
+  //
+  // shiftLeft: codex 操作に Shift+← が要る（2026-09-28 ユーザー報告）。
+  // 修飾キー付き矢印は CSI の拡張形 ESC[1;<mod>D（mod=2 が Shift）。
+  // ブラウザで Shift+← を打つと native の範囲選択に食われて term まで届かない
+  // ことがある＝ボタンで確実に送る。
+  //
+  // shiftTab: 「モード切替」ボタン（2026-09-28 ユーザー確認: Shift+Tab。
+  // Claude Code の plan-mode 切替と同じ割当で、codex 側にも承認モード等の
+  // 切替が Shift+Tab に割り当たっていることが多い）。Shift+Tab は
+  // Back Tab の標準 CSI（ESC[Z）で送る＝拡張 modifier 形ではなく Tab 専用の
+  // 確立した慣習（vim/readline 等が同じ形を認識）。ブラウザは Tab 系を
+  // フォーカス移動に使うため、素の Shift+Tab はページ側に食われがち
+  // ＝これもボタンで確実に送る。
   const PAD_KEYS = {
     esc: [0x1b],
     up: [0x1b, 0x5b, 0x41], // ESC [ A
     down: [0x1b, 0x5b, 0x42], // ESC [ B
     right: [0x1b, 0x5b, 0x43], // ESC [ C
     left: [0x1b, 0x5b, 0x44], // ESC [ D
+    shiftLeft: [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x44], // ESC [ 1 ; 2 D
+    shiftTab: [0x1b, 0x5b, 0x5a], // ESC [ Z (Back Tab)
+    // enter: CR（0x0d）。LF(0x0a) ではない＝herdr 側 pane.send_text と同じ
+    // 慣習（DESIGN 実測: \n だと改行にならず送信されない agent がある）。
+    enter: [0x0d],
   };
   const pad = $("cmpad"), grip = $("cmpad-grip");
   if (pad) {
@@ -373,6 +457,11 @@ function run() {
           try { term.focus(); } catch (e) { /* 送信は成立 */ }
         }
       });
+    });
+    // reload: 端末へは何も送らず、Webページ自体をリロードする
+    // （F5相当。pane/セッションには無関係＝接続し直しが必要な時用）。
+    pad.querySelectorAll('button[data-action="reload"]').forEach((b) => {
+      b.addEventListener("click", () => { location.reload(); });
     });
     // 位置の復元（保存済みなら left/top 絶対指定へ切替）。viewport 外に
     // ならないよう clamp（端末回転/リサイズで枠外固定を防ぐ）。
@@ -441,11 +530,21 @@ function run() {
     fr[5] = buf.length & 0xff;
     fr[6] = code;
     fr.set(buf, 7);
-    if (sendBytes(fr)) {
-      $("stat").textContent = "画像を送信（リモートで Ctrl+V 注入）";
-      return true;
+    // 相手が受け付けないと分かっているなら送らない（8MB を無駄に流さない）。
+    // ⚠ 分かっている時だけ止める。imagePasteOK===null（doc 未着／push 無効）は
+    //   「対応していない」証拠ではないので送る＝機能を勝手に塞がない。
+    if (imagePasteOK === false) {
+      $("stat").textContent =
+        "この PC は画像貼付が無効です（DROVER_WEB_IMAGE_PASTE=true で有効化。共用 PC は不可）";
+      return false;
     }
-    return false;
+    if (!sendBytes(fr)) return false;
+    // 送信できたことしか分からない。相手が処理したかまでは名乗らない
+    // （従来はここで常に「Ctrl+V 注入」と表示していた＝嘘だった）。
+    $("stat").textContent = imagePasteOK === true
+      ? "画像を送信（リモートで Ctrl+V 注入）"
+      : "画像を送信（相手の対応状況は未確認）";
+    return true;
   };
 
   // デスクトップ: paste(⌘V/Ctrl+V) で捕捉（モバイルは paste イベントが

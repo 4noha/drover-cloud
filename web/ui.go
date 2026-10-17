@@ -172,13 +172,21 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
 <div id="term"><div id="term-host"></div></div>
 <div id="cmpad" aria-label="操作パッド（ESC・十字キー）">
  <div id="cmpad-grip" title="ドラッグで移動">⠿⠿⠿</div>
- <div class="cmrow"><button data-k="up" aria-label="上">↑</button></div>
+ <div class="cmrow">
+  <button data-k="shiftTab" aria-label="Shift+Tab（モード切替）">⇧⇥</button>
+  <button data-k="up" aria-label="上">↑</button>
+  <button data-k="shiftLeft" aria-label="Shift+左（codex 操作用）">⇧←</button>
+ </div>
  <div class="cmrow">
   <button data-k="left" aria-label="左">←</button>
   <button class="esc" data-k="esc" aria-label="Esc（中断）">Esc</button>
   <button data-k="right" aria-label="右">→</button>
  </div>
- <div class="cmrow"><button data-k="down" aria-label="下">↓</button></div>
+ <div class="cmrow">
+  <button data-action="reload" aria-label="ページを再読み込み">↻</button>
+  <button data-k="down" aria-label="下">↓</button>
+  <button data-k="enter" aria-label="Enter">⏎</button>
+ </div>
 </div>
 <script src="/static/xterm.js"></script>
 <script src="/static/sync.js"></script>
