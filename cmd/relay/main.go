@@ -188,10 +188,26 @@ func mountGlasses(mux *http.ServeMux, store glasses.Store, st *state.Client) boo
 		})
 	}))
 	askState := enableGlassesAsk(h)
+	chatState := enableGlassesChat(h)
 	mux.Handle("/glasses/", h)
 	// トークンは値も長さもログに出さない。
-	log.Printf("glasses 有効（取得=%s, 投入=%s, 問い合わせ=%s）", glasses.AnswersPath, answerState(h), askState)
+	log.Printf("glasses 有効（取得=%s, 投入=%s, 問い合わせ=%s, ミラー=%s）", glasses.AnswersPath, answerState(h), askState, chatState)
 	return true
+}
+
+// enableGlassesChat はミラー中継（POST /glasses/chat・GET /glasses/chat/recent）を
+// GLASSES_MIRROR_TOKEN があるときだけ有効にする（無ければ 404 のまま）。
+// 読み出しは眼鏡のトークン（GLASSES_ASK_TOKEN）でも通す。トークンはログに出さない。
+func enableGlassesChat(h *glasses.Handler) string {
+	tok := os.Getenv("GLASSES_MIRROR_TOKEN")
+	if tok == "" {
+		return "無効"
+	}
+	if err := h.EnableChat(tok); err != nil {
+		log.Printf("glasses: ミラー中継を無効化（%v）", err)
+		return "無効"
+	}
+	return "有効"
 }
 
 // enableGlassesAsk は眼鏡の外出対応（POST /glasses/ask・GET /glasses/reply）を

@@ -9,7 +9,7 @@ import (
 )
 
 // RegisterAsk は glasses_asks/{pc}_{request_id} を作る（回答は空）。
-func (s *firestoreStore) RegisterAsk(ctx context.Context, pc, requestID string) (time.Time, error) {
+func (s *Firestore) RegisterAsk(ctx context.Context, pc, requestID string) (time.Time, error) {
 	if !ValidPC(pc) || !ValidRequestID(requestID) {
 		return time.Time{}, fmt.Errorf("%w: pc / request_id が不正です", ErrInvalid)
 	}
@@ -29,7 +29,7 @@ func (s *firestoreStore) RegisterAsk(ctx context.Context, pc, requestID string) 
 }
 
 // askDoc は問い合わせ doc を読む（無い・期限切れは exists=false）。
-func (s *firestoreStore) askDoc(ctx context.Context, pc, requestID string) (*firestore.DocumentSnapshot, map[string]any, bool, error) {
+func (s *Firestore) askDoc(ctx context.Context, pc, requestID string) (*firestore.DocumentSnapshot, map[string]any, bool, error) {
 	snap, err := s.fs.Collection(AskCollection).Doc(DocID(pc, requestID)).Get(ctx)
 	if snap != nil && !snap.Exists() {
 		return nil, nil, false, nil // 存在しない（Get は NotFound を返すが snapshot は非 nil）
@@ -46,7 +46,7 @@ func (s *firestoreStore) askDoc(ctx context.Context, pc, requestID string) (*fir
 }
 
 // AnswerAsk は登録済みの問い合わせなら回答を格納する。
-func (s *firestoreStore) AnswerAsk(ctx context.Context, pc, requestID, text string) (bool, time.Time, error) {
+func (s *Firestore) AnswerAsk(ctx context.Context, pc, requestID, text string) (bool, time.Time, error) {
 	if !ValidPC(pc) || !ValidRequestID(requestID) {
 		return false, time.Time{}, nil
 	}
@@ -67,7 +67,7 @@ func (s *firestoreStore) AnswerAsk(ctx context.Context, pc, requestID, text stri
 }
 
 // TakeAskReply は回答済みなら本文を返し、配達済みとして期限を短くする。
-func (s *firestoreStore) TakeAskReply(ctx context.Context, pc, requestID string) (string, bool, error) {
+func (s *Firestore) TakeAskReply(ctx context.Context, pc, requestID string) (string, bool, error) {
 	snap, m, ok, err := s.askDoc(ctx, pc, requestID)
 	if err != nil {
 		return "", false, err

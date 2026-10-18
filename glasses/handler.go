@@ -50,6 +50,11 @@ type Handler struct {
 	webhook  WebhookSender
 	askPC    string
 	askRL    *rateLimiter
+
+	// ミラー中継（/glasses/chat・/glasses/chat/recent）。EnableChat で有効化（chat.go）。
+	chat        ChatStore
+	mirrorToken string
+	chatRL      *rateLimiter
 }
 
 // NewHandler はハンドラを作る。pullToken が空/短すぎる場合はエラーを返す
@@ -131,6 +136,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveAsk(w, r, http.MethodPost, h.handleAsk)
 	case ReplyPath:
 		h.serveAsk(w, r, http.MethodGet, h.handleReply)
+	case ChatPath:
+		h.serveChat(w, r, http.MethodPost, true, h.handleChatPush)
+	case ChatRecentPath:
+		h.serveChat(w, r, http.MethodGet, false, h.handleChatRecent)
 	default:
 		writeErr(w, http.StatusNotFound, "not found")
 	}

@@ -20,6 +20,13 @@ type memStore struct {
 	ttl     time.Duration
 	now     func() time.Time
 	entries map[string]memEntry
+	chat    []memChatEntry // ミラー（ChatStore）
+}
+
+// memChatEntry はミラー 1 行（期限付き）。
+type memChatEntry struct {
+	item   ChatItem
+	expire time.Time
 }
 
 type memEntry struct {
@@ -85,6 +92,62 @@ func (m *memStore) expireNow(pc, rid string) {
 	e := m.entries[DocID(pc, rid)]
 	e.expire = m.now().Add(-time.Minute)
 	m.entries[DocID(pc, rid)] = e
+}
+
+// --- ミラー（ChatStore） -----------------------------------------------------
+
+// PutChat は doc id（entry id）で上書き保存する（本番と同じ規則）。
+func (m *memStore) PutChat(_ context.Context, items []ChatItem) error {
+	if len(items) > MaxChatBatch {
+		return fmt.Errorf("%w: items が多すぎます", ErrInvalid)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, it := range items {
+		if err := ValidateChatItem(it); err != nil {
+			return err
+		}
+		if it.TS <= 0 {
+			it.TS = m.now().UnixMilli()
+		}
+		m.chat = append(m.chat, memChatEntry{item: it, expire: m.now().Add(DefaultChatTTL)})
+	}
+	return nil
+}
+
+// RecentChat は期限切れを除き、古い→新しい順で最大 limit 件返す。
+func (m *memStore) RecentChat(_ context.Context, limit int) ([]ChatItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	limit = ClampChatLimit(limit)
+	now := m.now().UTC()
+	byID := map[string]ChatItem{}
+	for _, e := range m.chat {
+		if !e.expire.After(now) {
+			continue
+		}
+		byID[e.item.ID] = e.item // 同一 id は後勝ち（上書き）
+	}
+	out := make([]ChatItem, 0, len(byID))
+	for _, it := range byID {
+		out = append(out, it)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TS < out[j].TS })
+	if len(out) > limit {
+		out = out[len(out)-limit:] // 直近 limit 件（新しい側を残す）
+	}
+	return out, nil
+}
+
+// expireChat は 1 行を期限切れにする（TTL の検証用）。
+func (m *memStore) expireChat(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.chat {
+		if m.chat[i].item.ID == id {
+			m.chat[i].expire = m.now().Add(-time.Minute)
+		}
+	}
 }
 
 const (
