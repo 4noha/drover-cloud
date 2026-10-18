@@ -187,10 +187,31 @@ func mountGlasses(mux *http.ServeMux, store glasses.Store, st *state.Client) boo
 			PC: e.PC, SID: e.SID, ArgsDigest: e.ArgsDigest, ResultCode: e.ResultCode,
 		})
 	}))
+	askState := enableGlassesAsk(h)
 	mux.Handle("/glasses/", h)
 	// トークンは値も長さもログに出さない。
-	log.Printf("glasses 有効（取得=%s, 投入=%s）", glasses.AnswersPath, answerState(h))
+	log.Printf("glasses 有効（取得=%s, 投入=%s, 問い合わせ=%s）", glasses.AnswersPath, answerState(h), askState)
 	return true
+}
+
+// enableGlassesAsk は眼鏡の外出対応（POST /glasses/ask・GET /glasses/reply）を
+// GLASSES_ASK_TOKEN と GROK_WEBHOOK_URL/KEY が揃うときだけ有効にする
+// （欠けていれば 404 のまま＝既存挙動は不変）。URL・キー・トークンはログに出さない。
+func enableGlassesAsk(h *glasses.Handler) string {
+	askTok := os.Getenv("GLASSES_ASK_TOKEN")
+	if askTok == "" {
+		return "無効"
+	}
+	ws, err := glasses.NewWebhook(os.Getenv("GROK_WEBHOOK_URL"), os.Getenv("GROK_WEBHOOK_KEY"))
+	if err != nil {
+		log.Printf("glasses: 問い合わせ口を無効化（%v）", err)
+		return "無効"
+	}
+	if err := h.EnableAsk(askTok, ws, os.Getenv("GLASSES_ASK_PC")); err != nil {
+		log.Printf("glasses: 問い合わせ口を無効化（%v）", err)
+		return "無効"
+	}
+	return "有効"
 }
 
 // answerState は投入口の有効/無効をログ用に返す（トークンの値は出さない）。

@@ -177,6 +177,17 @@ func PutAnswer(ctx context.Context, st AnswerStore, reg Registry, pc, requestID,
 	if !registered {
 		return time.Time{}, fmt.Errorf("%w: %s", ErrNotRegistered, pc)
 	}
+	// relay 経由（POST /glasses/ask）の問い合わせへの回答は glasses_asks 側へ
+	// 振り分ける（LAN ブリッジの pull/ack に拾われないようにする）。
+	if as, ok := st.(AskStore); ok {
+		routed, exp, err := as.AnswerAsk(ctx, pc, requestID, text)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if routed {
+			return exp, nil
+		}
+	}
 	return st.Put(ctx, pc, requestID, text)
 }
 

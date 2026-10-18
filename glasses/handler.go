@@ -43,6 +43,13 @@ type Handler struct {
 	auditor     Auditor
 	rl          *rateLimiter
 	now         func() time.Time
+
+	// 問い合わせ口（/glasses/ask・/glasses/reply）。EnableAsk で有効化（ask.go）。
+	askToken string
+	askStore AskStore
+	webhook  WebhookSender
+	askPC    string
+	askRL    *rateLimiter
 }
 
 // NewHandler はハンドラを作る。pullToken が空/短すぎる場合はエラーを返す
@@ -120,6 +127,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.handleAnswer(w, r)
+	case AskPath:
+		h.serveAsk(w, r, http.MethodPost, h.handleAsk)
+	case ReplyPath:
+		h.serveAsk(w, r, http.MethodGet, h.handleReply)
 	default:
 		writeErr(w, http.StatusNotFound, "not found")
 	}
