@@ -638,3 +638,34 @@ func TestAnswerHTTPAudit(t *testing.T) {
 	}
 	_ = ts
 }
+
+// ack の綴り違い（request_ids）や空の ids は 400 で弾く（黙って 200 にしない）。
+func TestAckRejectsUnknownFieldsAndEmpty(t *testing.T) {
+	ctx := context.Background()
+	st := newMemStore()
+	if _, err := st.Put(ctx, testPC, "r-keep", "残る"); err != nil {
+		t.Fatal(err)
+	}
+	ts := newTestHandler(t, st, true)
+	for _, body := range []string{
+		`{"pc":"` + testPC + `","request_ids":["r-keep"]}`,
+		`{"pc":"` + testPC + `","ids":[]}`,
+		`{"pc":"` + testPC + `"}`,
+	} {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+AckPath, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set("Content-Type", "application/json")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusBadRequest {
+			t.Fatalf("body=%s status=%d, want 400", body, r.StatusCode)
+		}
+	}
+	items, err := st.Pull(ctx, testPC, 0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("r-keep が消えた: items=%v err=%v", items, err)
+	}
+}

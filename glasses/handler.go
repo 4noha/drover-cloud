@@ -193,12 +193,19 @@ type ackRequest struct {
 func (h *Handler) handleAck(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var req ackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "body が不正です（JSON・64KB 以内）")
+	dec := json.NewDecoder(r.Body)
+	// 未知のフィールド（例: request_ids の綴り違い）を黙って成功扱いにしない。
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "body が不正です（JSON・64KB 以内・フィールドは pc と ids のみ）")
 		return
 	}
 	if !ValidPC(req.PC) {
 		writeErr(w, http.StatusBadRequest, "pc が不正です")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeErr(w, http.StatusBadRequest, "ids が空です")
 		return
 	}
 	if len(req.IDs) > maxAckIDs {
