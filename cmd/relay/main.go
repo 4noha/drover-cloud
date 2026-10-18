@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/4noha/drover-cloud/glasses"
 	"github.com/4noha/drover-cloud/mcp"
 	"github.com/4noha/drover-cloud/oauth"
 	"github.com/4noha/drover-cloud/relay"
@@ -69,6 +70,11 @@ func handler() http.Handler {
 			}
 			mux.Handle("/", ws.Handler()) // /,/login,/auth/google,/api,/ws
 
+			// 眼鏡（Rokid）の回答受け口。GLASSES_ENABLED=1 のときだけ
+			// ストアを作る（作れなければ nil＝MCP ツールも HTTP も無効の
+			// まま＝既存挙動は不変）。
+			gStore := glassesStoreFor(proj)
+
 			// MCP（drover-cloud-mcp-design.md）。MCP_ENABLED=1 のときだけ
 			// /mcp・/oauth/*・/.well-known/* をマウントする＝未設定なら
 			// 既存構成（relay/web/webauth/state の4パッケージ＝「cm とバイト
@@ -92,16 +98,33 @@ func handler() http.Handler {
 					as := oauth.New(st, webauth.NewSigner(key), clientID, allowed, nil,
 						redirectHosts, selfBase)
 					ms := mcp.New(st, as, slaveAccess)
+					if gStore != nil {
+						ms.SetGlasses(gStore) // 眼鏡の回答を保存するツールを有効化
+					}
 					mux.Handle("/oauth/", as.Handler())
 					mux.Handle("/.well-known/", as.Handler())
 					mux.Handle("/mcp", ms.Handler())
 					log.Printf("MCP 有効（self=%s, redirect_hosts=%q, slave_access=%q）", selfBase, redirectHosts, slaveAccess)
 				}
 			}
+			// HTTP の受け口（ブリッジが外向きに取りに来る）。GLASSES_PULL_TOKEN
+			// が無い/短いときはマウントしない＝fail closed。
+			if gStore != nil {
+				mountGlasses(mux, gStore, st)
+			}
 			return mux
 		}
 	} else {
 		log.Printf("web 無効（GCP_PROJECT/WEB_SIGNING_KEY/GOOGLE_OAUTH_CLIENT_ID/ALLOWED_EMAILS 未設定）")
+	}
+	// web 無効でも GLASSES_ENABLED=1 なら受け口を立てる（未登録 pc の判定に
+	// 使う state クライアントはここで別に作る）。
+	if gStore := glassesStoreFor(proj); gStore != nil {
+		if gst, err := state.New(context.Background(), proj, "relay"); err != nil {
+			log.Printf("glasses 無効（state 接続失敗）: %v", err)
+		} else {
+			mountGlasses(mux, gStore, gst)
+		}
 	}
 	// relay のみ: ヘルスは "/"（/healthz は Google Front End が予約・遮断）
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +136,69 @@ func handler() http.Handler {
 		io.WriteString(w, "ok")
 	})
 	return mux
+}
+
+// glasses の登録判定（glassesRegistry）は glasses.StateRegistry に移した
+// （MCP の glasses_answer と HTTP の投入口で同じ判定を共有するため）。
+
+// glassesStoreFor は GLASSES_ENABLED=1 かつ GCP_PROJECT があるときだけ
+// Firestore ストアを作る（未設定・接続失敗は nil＝機能 off）。
+func glassesStoreFor(proj string) glasses.Store {
+	if os.Getenv("GLASSES_ENABLED") != "1" {
+		return nil
+	}
+	if proj == "" {
+		log.Printf("glasses 無効（GCP_PROJECT 未設定＝Firestore を作れない）")
+		return nil
+	}
+	store, err := glasses.NewStore(context.Background(), proj)
+	if err != nil {
+		log.Printf("glasses 無効（Firestore 接続失敗）: %v", err)
+		return nil
+	}
+	return store
+}
+
+// mountGlasses は /glasses/ をマウントする。GLASSES_PULL_TOKEN が無い/短い
+// ときは何もしない（fail closed）。投入口（POST /glasses/answer）は
+// GLASSES_ANSWER_TOKEN が 32 文字以上かつ取得トークンと別のときだけ有効。
+func mountGlasses(mux *http.ServeMux, store glasses.Store, st *state.Client) bool {
+	if store == nil || st == nil {
+		return false
+	}
+	tok := os.Getenv("GLASSES_PULL_TOKEN")
+	if len(tok) < glasses.MinTokenLen {
+		log.Printf("glasses 無効（GLASSES_PULL_TOKEN が空/短すぎる）")
+		return false
+	}
+	answerTok := os.Getenv("GLASSES_ANSWER_TOKEN")
+	if answerTok != "" && (len(answerTok) < glasses.MinTokenLen || answerTok == tok) {
+		log.Printf("glasses: GLASSES_ANSWER_TOKEN を無効化（32 文字未満 または 取得トークンと同一）")
+	}
+	h, err := glasses.NewHandler(store, glasses.StateRegistry{St: st}, tok, answerTok)
+	if err != nil {
+		log.Printf("glasses 無効: %v", err)
+		return false
+	}
+	// 監査は mcp_audit へ（MCP の tools/call と同じコレクション。本文は書かない）。
+	h.SetAuditor(glasses.AuditorFunc(func(ctx context.Context, e glasses.AuditEntry) error {
+		return st.WriteMCPAudit(ctx, state.MCPAuditEntry{
+			Email: e.Email, ClientID: e.ClientID, Tool: e.Tool,
+			PC: e.PC, SID: e.SID, ArgsDigest: e.ArgsDigest, ResultCode: e.ResultCode,
+		})
+	}))
+	mux.Handle("/glasses/", h)
+	// トークンは値も長さもログに出さない。
+	log.Printf("glasses 有効（取得=%s, 投入=%s）", glasses.AnswersPath, answerState(h))
+	return true
+}
+
+// answerState は投入口の有効/無効をログ用に返す（トークンの値は出さない）。
+func answerState(h *glasses.Handler) string {
+	if h.AnswerEnabled() {
+		return "有効"
+	}
+	return "無効"
 }
 
 func main() {

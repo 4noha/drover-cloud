@@ -232,9 +232,21 @@ func TestToolsCallListMachines(t *testing.T) {
 	if len(machines) == 0 {
 		t.Fatalf("machines が空: %s", text)
 	}
-	m0 := machines[0].(map[string]any)
-	if m0["working"].(float64) != 1 {
-		t.Fatalf("working カウント不正: %+v", m0)
+	// 自 PC の行を pc 名で引く（他テストが別 PC を登録していても成立する
+	// ようにする＝ListPCs の順序に依存しない）。
+	found := false
+	for _, x := range machines {
+		m, _ := x.(map[string]any)
+		if m["pc"] != "pc-mcp-test" {
+			continue
+		}
+		found = true
+		if m["working"].(float64) != 1 {
+			t.Fatalf("working カウント不正: %+v", m)
+		}
+	}
+	if !found {
+		t.Fatalf("pc-mcp-test が machines に無い: %s", text)
 	}
 }
 
