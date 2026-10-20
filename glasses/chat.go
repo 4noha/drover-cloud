@@ -55,7 +55,7 @@ type ChatItem struct {
 // ChatStore はミラーの保管（本番は Firestore、テストはインメモリ）。
 type ChatStore interface {
 	PutChat(ctx context.Context, items []ChatItem) error
-	RecentChat(ctx context.Context, limit int) ([]ChatItem, error)
+	RecentChat(ctx context.Context, limit int, since int64) ([]ChatItem, error)
 }
 
 // ValidateChatItem は 1 行の検査。
@@ -207,7 +207,13 @@ func (h *Handler) handleChatRecent(w http.ResponseWriter, r *http.Request) {
 			limit = ClampChatLimit(n)
 		}
 	}
-	items, err := h.chat.RecentChat(r.Context(), limit)
+	since := int64(0)
+	if v := strings.TrimSpace(r.URL.Query().Get("since")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			since = n
+		}
+	}
+	items, err := h.chat.RecentChat(r.Context(), limit, since)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "取得に失敗しました")
 		return

@@ -150,12 +150,19 @@ func (s *Firestore) PutChat(ctx context.Context, items []ChatItem) error {
 
 // RecentChat は直近のミラー行を古い→新しい順で返す（HUD がその順で追記する）。
 // ts の降順で取ってから Go 側で昇順に戻す＝単一フィールド索引だけで済む。
-func (s *Firestore) RecentChat(ctx context.Context, limit int) ([]ChatItem, error) {
+func (s *Firestore) RecentChat(ctx context.Context, limit int, since int64) ([]ChatItem, error) {
 	limit = ClampChatLimit(limit)
-	docs, err := s.fs.Collection(ChatCollection).
+	q := s.fs.Collection(ChatCollection).
 		OrderBy("ts", firestore.Desc).
-		Limit(limit).
-		Documents(ctx).GetAll()
+		Limit(limit)
+	if since > 0 {
+		// 同一 ts の取りこぼしを避けるため >= で取る（HUD 側は id で重複排除する）
+		q = s.fs.Collection(ChatCollection).
+			Where("ts", ">=", since).
+			OrderBy("ts", firestore.Desc).
+			Limit(limit)
+	}
+	docs, err := q.Documents(ctx).GetAll()
 	if err != nil {
 		return nil, err
 	}

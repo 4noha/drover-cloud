@@ -116,7 +116,7 @@ func (m *memStore) PutChat(_ context.Context, items []ChatItem) error {
 }
 
 // RecentChat は期限切れを除き、古い→新しい順で最大 limit 件返す。
-func (m *memStore) RecentChat(_ context.Context, limit int) ([]ChatItem, error) {
+func (m *memStore) RecentChat(_ context.Context, limit int, since int64) ([]ChatItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	limit = ClampChatLimit(limit)
@@ -124,6 +124,9 @@ func (m *memStore) RecentChat(_ context.Context, limit int) ([]ChatItem, error) 
 	byID := map[string]ChatItem{}
 	for _, e := range m.chat {
 		if !e.expire.After(now) {
+			continue
+		}
+		if since > 0 && e.item.TS < since {
 			continue
 		}
 		byID[e.item.ID] = e.item // 同一 id は後勝ち（上書き）

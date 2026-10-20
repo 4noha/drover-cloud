@@ -118,6 +118,38 @@ func TestChatPushAndRecent(t *testing.T) {
 	}
 }
 
+func TestChatRecentSince(t *testing.T) {
+	st := newMemAskStore()
+	ts := newChatServer(t, st)
+	body := `{"items":[` +
+		`{"id":"s1","role":"user","text":"古い","ts":1000},` +
+		`{"id":"s2","role":"assistant","text":"中","ts":2000},` +
+		`{"id":"s3","role":"assistant","text":"新しい","ts":3000}]}`
+	if code, out := postChat(t, ts, testMirrorToken, body); code != http.StatusOK {
+		t.Fatalf("push 失敗: code=%d out=%v", code, out)
+	}
+	// since=2000 は 2000 以降（同一 ts を含む）＝2 件
+	code, items := getChat(t, ts, testAskToken, "?since=2000")
+	if code != http.StatusOK || len(items) != 2 {
+		t.Fatalf("since=2000: code=%d len=%d items=%v", code, len(items), items)
+	}
+	if items[0].(map[string]any)["id"] != "s2" || items[1].(map[string]any)["id"] != "s3" {
+		t.Fatalf("since=2000 の内容が不正: %v", items)
+	}
+	// since=2500 は 1 件
+	if _, items = getChat(t, ts, testAskToken, "?since=2500"); len(items) != 1 {
+		t.Fatalf("since=2500: len=%d", len(items))
+	}
+	// since=4000 は 0 件
+	if _, items = getChat(t, ts, testAskToken, "?since=4000"); len(items) != 0 {
+		t.Fatalf("since=4000: len=%d", len(items))
+	}
+	// 不正な since は無視（全件）
+	if _, items = getChat(t, ts, testAskToken, "?since=abc"); len(items) != 3 {
+		t.Fatalf("不正 since: len=%d", len(items))
+	}
+}
+
 func TestChatPushSingleItem(t *testing.T) {
 	st := newMemAskStore()
 	ts := newChatServer(t, st)
