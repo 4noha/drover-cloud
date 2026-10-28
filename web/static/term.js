@@ -13,6 +13,14 @@
 // 横の見切れは固定広幅＋ブラウザのピンチズーム/横パンで閲覧。
 // コンソール切替は ‹/› ボタン（横スワイプは native スクロールと競合
 // するため廃止）。
+//
+// ワイヤ v2（2026-10-29）: producer（herdr-drover）が対応していれば、上の
+// 固定グリッドは使わず **元 pane の実サイズ**＋xterm.js の scrollback に
+// 切り替わる（cmMakeMetaFilter / onMeta）。producer は observe を元 pane の
+// サイズで起動し、ストリーム先頭に META と pane.read の履歴を 1 回流す。
+// observe のフレームは `ESC[2J`＋絶対座標だけで一切スクロールしない（実測）
+// ので、先に書いた履歴を壊さない。「RESIZE は接続時 1 回だけ・再送しない」
+// の不変条件はそのまま（サイズ合わせは全てクライアント内で完結）。
 "use strict";
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
@@ -103,6 +111,120 @@ function cmTrackScroll(s) {
   // (following=false)はユーザのスクロール位置を一切動かさない。
   if (s.following) return { scrollTop: pinTop, following: true };
   return { scrollTop: s.scrollTop, following: false };
+}
+
+// cmMakeMetaFilter: producer（herdr-drover ワイヤ v2）がストリーム先頭に流す
+// 制御列 OSC 7707（ESC ] 7707 ; k=v;k=v ESC \）を xterm に流す前に剥がし、
+// payload 文字列を onMeta に渡す純粋フィルタ（node で決定論テスト）。
+//  ・`v=2;cols=C;rows=R;trunc=T` … 以降 `hist_end` までは **履歴**（producer
+//    が pane.read で取った scrollback を CRLF 行＋R 行のパディングにした
+//    もの）。履歴は **ページにつき 1 回だけ** emit し、再接続（quiescence
+//    切断→再 wake）でまた届いても捨てる＝scrollback に重複しない。
+//  ・META が来ない producer（旧 PC・↗窓）では何も起きない＝従来どおり。
+// マーカーが chunk 境界で割れても carry で再結合（sync.js と同じ規律）。
+// 2026 同期シムより **上流** に置く（OSC バイトを同期ブロックに混ぜない）。
+// feed.reset() は接続ごとに呼ぶ（取りかけの carry/META を旧接続から継がない。
+// 「履歴は 1 回だけ」の記憶は保つ）。
+function cmMakeMetaFilter(onMeta, emit) {
+  var OSC = [0x1b, 0x5d, 0x37, 0x37, 0x30, 0x37, 0x3b]; // ESC ] 7 7 0 7 ;
+  var ST = [0x1b, 0x5c];                                 // ESC \
+  var carry = new Uint8Array(0);
+  var inMeta = false, acc = new Uint8Array(0);
+  var inHist = false, histDone = false;
+  function indexOf(d, pat, from) {
+    outer:
+    for (var i = from; i + pat.length <= d.length; i++) {
+      for (var j = 0; j < pat.length; j++) {
+        if (d[i + j] !== pat[j]) continue outer;
+      }
+      return i;
+    }
+    return -1;
+  }
+  function tailPrefix(d, pat) {
+    var max = Math.min(pat.length - 1, d.length);
+    for (var k = max; k >= 1; k--) {
+      var ok = true;
+      for (var j = 0; j < k; j++) {
+        if (d[d.length - k + j] !== pat[j]) { ok = false; break; }
+      }
+      if (ok) return k;
+    }
+    return 0;
+  }
+  function concat(a, b) {
+    var r = new Uint8Array(a.length + b.length);
+    r.set(a, 0); r.set(b, a.length);
+    return r;
+  }
+  function out(bytes) {
+    if (bytes.length === 0) return;
+    if (inHist && histDone) return; // 2 回目以降の履歴は捨てる
+    emit(bytes);
+  }
+  function feed(chunk) {
+    var data = carry.length ? concat(carry, chunk) : chunk;
+    carry = new Uint8Array(0);
+    var pos = 0;
+    while (pos < data.length) {
+      if (!inMeta) {
+        var i = indexOf(data, OSC, pos);
+        if (i < 0) {
+          var rest = data.subarray(pos);
+          var hold = tailPrefix(rest, OSC);
+          var cut = rest.length - hold;
+          if (cut > 0) out(rest.subarray(0, cut));
+          carry = rest.subarray(cut).slice();
+          return;
+        }
+        if (i > pos) out(data.subarray(pos, i));
+        inMeta = true;
+        acc = new Uint8Array(0);
+        pos = i + OSC.length;
+      } else {
+        var j = indexOf(data, ST, pos);
+        if (j < 0) {
+          var rest2 = data.subarray(pos);
+          var hold2 = tailPrefix(rest2, ST);
+          var cut2 = rest2.length - hold2;
+          if (cut2 > 0) acc = concat(acc, rest2.subarray(0, cut2));
+          carry = rest2.subarray(cut2).slice();
+          return;
+        }
+        acc = concat(acc, data.subarray(pos, j));
+        var payload = String.fromCharCode.apply(null, acc);
+        inMeta = false;
+        pos = j + ST.length;
+        if (payload.indexOf("v=") === 0) {
+          inHist = true;
+        } else if (payload === "hist_end") {
+          inHist = false;
+          histDone = true;
+        }
+        onMeta(payload);
+      }
+    }
+  }
+  feed.reset = function () {
+    carry = new Uint8Array(0);
+    inMeta = false;
+    acc = new Uint8Array(0);
+    inHist = false;
+  };
+  return feed;
+}
+
+// cmParseMeta: `k=v;k=v` を {k: v} へ（値は数値なら number）。純粋。
+function cmParseMeta(payload) {
+  var o = {};
+  var parts = payload.split(";");
+  for (var i = 0; i < parts.length; i++) {
+    var eq = parts[i].indexOf("=");
+    if (eq < 0) { o[parts[i]] = true; continue; }
+    var k = parts[i].slice(0, eq), v = parts[i].slice(eq + 1);
+    o[k] = /^-?[0-9]+$/.test(v) ? parseInt(v, 10) : v;
+  }
+  return o;
 }
 
 // cmReconnectGate: 再接続して良いかの純粋判定（node で決定論テスト）。
@@ -208,6 +330,43 @@ function run() {
     fontFamily: "Menlo,Consolas,monospace", fontSize: 13 });
   term.open($("term-host"));
 
+  // ---- ワイヤ v2（producer が対応していれば自動で切替・2026-10-29） ----
+  // 接続のたび HELLO（SCROLL dy=0x7fff。旧 PC は SCROLL を parse-and-ignore
+  // するので無害）を送ると、新 producer は **元 pane の実サイズ**で observe し、
+  // ストリーム先頭に META（OSC 7707）＋履歴（pane.read の scrollback）を流す。
+  // Web はそれを見て xterm を元 pane のサイズに合わせ scrollback を有効化する
+  // ＝「履歴を遡れる」「接続で一発描画」「RESIZE 往復なし」。META が来なければ
+  // 従来の固定 160×500 グリッドのまま（旧 PC との後方互換）。
+  // ⚠ サイズを producer へ送る RESIZE は従来どおり接続時 1 回だけ（不変条件）。
+  //   以下の fontSize 調整は **クライアント内だけ**で完結し、RESIZE を再送しない。
+  const HELLO_V2 = new Uint8Array([0xff, 0xfe, 0x7f, 0xff]);
+  let v2 = false;
+  const fontOverride = clampNum(qs.get("font"), 0);
+  const fitFont = (rows) => {
+    // 元 pane の行数が画面に収まる fontSize を一度だけ決める（収まらなければ
+    // #term-host の native スクロール＋cmTrackScroll が従来どおり面倒を見る）。
+    const host = $("term-host");
+    let px = fontOverride || Math.floor(host.clientHeight / rows / 1.25);
+    if (!fontOverride) px = Math.max(8, Math.min(13, px));
+    if (px !== term.options.fontSize) term.options.fontSize = px;
+  };
+  const onMeta = (payload) => {
+    const m = cmParseMeta(payload);
+    if (m.v === 2) {
+      if (!v2) { v2 = true; term.options.scrollback = 5000; }
+      if (m.cols > 0 && m.rows > 0 && (term.cols !== m.cols || term.rows !== m.rows)) {
+        term.resize(m.cols, m.rows);
+      }
+      if (m.rows > 0) fitFont(m.rows);
+      $("stat").textContent = "接続済（" + m.cols + "×" + m.rows + "・履歴" +
+        (m.trunc ? "は上限で切れています" : "付き") + "）";
+    }
+  };
+  // META フィルタはページで 1 つ（「履歴は 1 回だけ」を接続をまたいで記憶）。
+  // 下流の同期シムは接続ごとに差し替える。
+  let syncFeed = null;
+  const metaFeed = cmMakeMetaFilter(onMeta, (b) => { if (syncFeed) syncFeed(b); });
+
   // ---- データ線（/ws）。quiescence（無通信 30s）でサーバ側から閉じる
   // 設計なので、閉鎖は異常ではない。再接続は cmReconnectGate の規律で
   // 「契機があった時だけ」: ①Firestore push（status doc 変化＝
@@ -248,20 +407,23 @@ function run() {
     // 全ハンドラを「自分が現役 (ws === sock) の時だけ」動かす＝古い
     // 接続の遅延イベントが新しい接続へ干渉しない（relay 側 takeover
     // 修正と同じ規律のブラウザ版）。
-    const feed = cmMakeSyncFilter((b) => term.write(b, scheduleLand));
+    syncFeed = cmMakeSyncFilter((b) => term.write(b, scheduleLand));
+    metaFeed.reset();
     sock.onopen = () => {
       if (ws !== sock) return;
       attempts = 0; // 成功で backoff リセット
-      // 固定論理サイズを **接続のたび 1 回だけ** 送る（完全 frame での
-      // catch-up を兼ねる）。以後 resize/ズーム/スクロール/URL バーで
-      // 再送しない（暴走ループを断つ核心）。
+      // HELLO（v2 宣言）→ 固定論理サイズを **接続のたび 1 回だけ** 送る
+      // （完全 frame での catch-up を兼ねる）。以後 resize/ズーム/スクロール/
+      // URL バーで再送しない（暴走ループを断つ核心）。v2 producer は
+      // サイズ要求を無視して元 pane 実サイズで応える。
+      sock.send(HELLO_V2);
       sock.send(resizeFrame(WEB_ROWS, WEB_COLS));
       flushQ();
       $("stat").textContent = "接続済";
     };
     sock.onmessage = (ev) => {
       if (ws !== sock) return;
-      feed(new Uint8Array(ev.data));
+      metaFeed(new Uint8Array(ev.data));
     };
     sock.onclose = () => {
       if (ws !== sock) return;
@@ -315,22 +477,24 @@ function run() {
   // 来るため、最初のフレームでなく最後から 180ms 静止で沈静確定。
   const host = $("term-host");
   let following = true, landTimer = 0;
+  // 行番号は **画面（viewport）相対**。cmTrackScroll は #term-host の高さ
+  // （＝xterm の画面 rows ぶん）を行数で割った px を使うので、v2 で scrollback
+  // が付いても buffer 絶対行（baseY+cursorY）ではなく cursorY を使う
+  // （legacy は scrollback:0＝baseY=0 で同値）。
   const cursorRow = () => {
-    try {
-      const a = term.buffer.active;
-      return ((a.baseY | 0) + (a.cursorY | 0)) | 0; // scrollback:0 で baseY=0
-    } catch (e) { return 0; }
+    try { return term.buffer.active.cursorY | 0; } catch (e) { return 0; }
   };
   // pinRow: カーソル行の下に出るヒント/ステータス行（本数はエージェント
   // ごとに違う）まで含めた実内容の最終行。cmLastContentRow（純粋）に渡す
-  // ため、毎回 WEB_ROWS 行ぶんの文字列配列を作る（180ms スロットル沈静時
-  // のみ呼ぶので頻度は問題にならない）。
+  // ため、毎回画面 rows 行ぶんの文字列配列を作る（180ms スロットル沈静時
+  // のみ呼ぶので頻度は問題にならない）。画面行は baseY から数える。
   const pinRow = () => {
     try {
       const a = term.buffer.active;
+      const base = a.baseY | 0;
       const lines = [];
-      for (let r = 0; r < WEB_ROWS; r++) {
-        const line = a.getLine(r);
+      for (let r = 0; r < term.rows; r++) {
+        const line = a.getLine(base + r);
         lines.push(line ? line.translateToString(true) : "");
       }
       return cmLastContentRow(lines, cursorRow());
@@ -338,7 +502,7 @@ function run() {
   };
   const stateNow = (mode) => ({
     mode, following, cy: cursorRow(), pinRow: pinRow(),
-    cellH: host.scrollHeight / WEB_ROWS, // 1 行 px（全高/行数。固定）
+    cellH: host.scrollHeight / term.rows, // 1 行 px（全高/行数）
     clientHeight: host.clientHeight,
     scrollHeight: host.scrollHeight,
     scrollTop: host.scrollTop,

@@ -101,6 +101,73 @@ console.log("OK");
 	}
 }
 
+// TestTermJSMetaFilter — ワイヤ v2 の META フィルタ（cmMakeMetaFilter/cmParseMeta）。
+// producer（herdr-drover internal/bridge/history.go）が流す OSC 7707 を剥がして
+// onMeta へ渡し、履歴区間はページで 1 回だけ通す。chunk 境界でマーカーが割れる
+// ケース・2 回目の接続で履歴を捨てるケース・META が無い旧 producer の素通しを固定。
+func TestTermJSMetaFilter(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node が無いので skip")
+	}
+	b, err := os.ReadFile("static/term.js")
+	if err != nil {
+		t.Fatalf("term.js: %v", err)
+	}
+	src := string(b)
+	script := extractFunc(t, src, "cmMakeMetaFilter") + "\n" +
+		extractFunc(t, src, "cmParseMeta") + "\n" + `
+const fail = [];
+const eq = (got, want, msg) => { if (got !== want) fail.push(msg + " got=" + JSON.stringify(got) + " want=" + JSON.stringify(want)); };
+const enc = (s) => Uint8Array.from(Buffer.from(s, "latin1"));
+const META = (p) => "\x1b]7707;" + p + "\x1b\\";
+const FRAME = "\x1b[?2026h\x1b[2J\x1b[1;1Hlive\x1b[?2026l";
+
+// --- 1 接続目: META → 履歴 → hist_end → frame（マーカーを chunk 境界で割る） ---
+let metas = [], out = [];
+const feed = cmMakeMetaFilter((p) => metas.push(p), (b) => out.push(Buffer.from(b).toString("latin1")));
+const stream = META("v=2;cols=179;rows=70;trunc=1") + "HIST-1\r\nHIST-2\r\n\r\n" + META("hist_end") + FRAME;
+const all = enc(stream);
+// 3 バイトずつ刻む（OSC 先頭・ST・2026 マーカーが必ず割れる）
+for (let i = 0; i < all.length; i += 3) feed(all.subarray(i, Math.min(all.length, i + 3)));
+eq(metas.join("|"), "v=2;cols=179;rows=70;trunc=1|hist_end", "META が順に onMeta へ渡る:");
+eq(out.join(""), "HIST-1\r\nHIST-2\r\n\r\n" + FRAME, "1 回目は履歴もフレームも通り OSC は剥がれる:");
+
+// --- 2 接続目（再接続）: 同じ先頭が来るが履歴は捨て、フレームは通す ---
+metas = []; out = [];
+feed.reset();
+feed(all);
+eq(metas.join("|"), "v=2;cols=179;rows=70;trunc=1|hist_end", "再接続でも META は通知される:");
+eq(out.join(""), FRAME, "再接続の履歴は捨て、フレームだけ通す:");
+
+// --- 旧 producer（META 無し）: 一切手を付けない（OSC 8 等の他の OSC も素通し） ---
+out = [];
+const legacy = "\x1b]8;;\x1b\\abc\x1b]7" + "\x1b[?2026h" + "xyz\x1b]7707";
+const f2 = cmMakeMetaFilter(() => fail.push("旧 producer で onMeta が呼ばれた"), (b) => out.push(Buffer.from(b).toString("latin1")));
+f2(enc(legacy));
+// 末尾の "\x1b]7707" は OSC 先頭の可能性があるため carry（まだ出ない）
+eq(out.join(""), "\x1b]8;;\x1b\\abc\x1b]7\x1b[?2026hxyz", "META 以外は無改変で通る（末尾の部分マーカーは保留）:");
+f2(enc("x"));
+eq(out.join(""), "\x1b]8;;\x1b\\abc\x1b]7\x1b[?2026hxyz\x1b]7707x", "部分マーカーが不成立なら後で吐き出す:");
+
+// --- cmParseMeta ---
+const m = cmParseMeta("v=2;cols=179;rows=70;trunc=0");
+eq(m.v, 2, "v:"); eq(m.cols, 179, "cols:"); eq(m.rows, 70, "rows:"); eq(m.trunc, 0, "trunc:");
+eq(cmParseMeta("hist_end").hist_end, true, "値なしキー:");
+
+if (fail.length) { console.log(fail.join("\n")); process.exit(1); }
+console.log("OK");
+`
+	cmd := exec.Command(node, "-e", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("判定表が一致しない:\n%s", out)
+	}
+	if !strings.Contains(string(out), "OK") {
+		t.Fatalf("想定外の出力: %s", out)
+	}
+}
+
 // TestTermJSTrackScroll — cmTrackScroll/cmLastContentRow の真理値表を固定する。
 // 修正前（pinRow 非対応）はこの表のうち「ヒントが収まる時はヒント下端を
 // 可視下端へピン」が落ちることを git stash で確認済み（カーソル行だけを
