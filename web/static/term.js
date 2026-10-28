@@ -335,6 +335,23 @@ function run() {
     fontFamily: "Menlo,Consolas,monospace", fontSize: 13 });
   term.open($("term-host"));
 
+  // Ctrl+V はブラウザの貼り付けにする（2026-10-29 ユーザー報告）。xterm.js の
+  // 既定は Ctrl+V を C0 SYN(0x16) として pane へ送る＝Claude Code では「リモート
+  // のクリップボードから画像貼付」が走り、ブラウザ側のテキストは貼れない。
+  // custom handler で false を返すと xterm は preventDefault せずに手を引く
+  // （実コード確認: _keyDown は cancel の前に return）ので、ブラウザの native
+  // paste → xterm の paste ハンドラ（bracketed paste 込み）→ onData → pane の
+  // 経路に乗る。Mac の Cmd+V は元々 native paste。画像は document の paste 捕捉
+  // （下）と 📷 ボタンの別経路。0x16 を本当に送りたい場面は無い（画像貼付は
+  // producer が自分で Ctrl+V を注入する）。
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type === "keydown" && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey &&
+        (ev.code === "KeyV" || ev.key === "v" || ev.key === "V")) {
+      return false;
+    }
+    return true;
+  });
+
   // ---- ワイヤ v2（producer が対応していれば自動で切替・2026-10-29） ----
   // 接続のたび HELLO（SCROLL dy=0x7fff。旧 PC は SCROLL を parse-and-ignore
   // するので無害）を送ると、新 producer は **元 pane の実サイズ**で observe し、
