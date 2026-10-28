@@ -187,6 +187,9 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
   <button data-k="down" aria-label="下">↓</button>
   <button data-k="enter" aria-label="Enter">⏎</button>
  </div>
+ <div class="cmrow">
+  <button data-k="bottom" title="最新へ（元 pane のローカル表示も最下部に戻る）" aria-label="最新へ">⤓</button>
+ </div>
 </div>
 <script src="/static/xterm.js"></script>
 <script src="/static/sync.js"></script>

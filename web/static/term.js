@@ -130,7 +130,11 @@ function cmMakeMetaFilter(onMeta, emit) {
   var ST = [0x1b, 0x5c];                                 // ESC \
   var carry = new Uint8Array(0);
   var inMeta = false, acc = new Uint8Array(0);
-  var inHist = false, histDone = false;
+  // inHist: v=2 META〜hist_end の間（履歴区間）。blockHasHist: その区間に
+  // 本文があるか（META の hist=1）。histDone: 本文つき履歴を既に通したか＝
+  // 以降の接続の履歴区間は捨てる。hist=0 の区間（producer が予算内に履歴を
+  // 取れなかった接続）は histDone を立てない＝次の接続の履歴を受け入れる。
+  var inHist = false, histDone = false, blockHasHist = false;
   function indexOf(d, pat, from) {
     outer:
     for (var i = from; i + pat.length <= d.length; i++) {
@@ -197,9 +201,10 @@ function cmMakeMetaFilter(onMeta, emit) {
         pos = j + ST.length;
         if (payload.indexOf("v=") === 0) {
           inHist = true;
+          blockHasHist = payload.indexOf(";hist=1") >= 0;
         } else if (payload === "hist_end") {
           inHist = false;
-          histDone = true;
+          if (blockHasHist) histDone = true;
         }
         onMeta(payload);
       }
@@ -340,7 +345,10 @@ function run() {
   // ⚠ サイズを producer へ送る RESIZE は従来どおり接続時 1 回だけ（不変条件）。
   //   以下の fontSize 調整は **クライアント内だけ**で完結し、RESIZE を再送しない。
   const HELLO_V2 = new Uint8Array([0xff, 0xfe, 0x7f, 0xff]);
-  let v2 = false;
+  // v2: v2 モードに入ったか／painted: 何か描いたか／histGot: 本文つき履歴を
+  // 受け取ったか（producer は長寿命 pane の pane.read が遅い（4〜16s 実測）と
+  // 初回接続を hist=0 で先に描き、次の接続で hist=1 を送ってくる）。
+  let v2 = false, painted = false, histGot = false;
   const fontOverride = clampNum(qs.get("font"), 0);
   const fitFont = (rows) => {
     // 元 pane の行数が画面に収まる fontSize を一度だけ決める（収まらなければ
@@ -358,8 +366,19 @@ function run() {
         term.resize(m.cols, m.rows);
       }
       if (m.rows > 0) fitFont(m.rows);
-      $("stat").textContent = "接続済（" + m.cols + "×" + m.rows + "・履歴" +
-        (m.trunc ? "は上限で切れています" : "付き") + "）";
+      // 履歴が遅れて届く（初回 hist=0 → 次の接続で hist=1）とき、既に描いた
+      // 画面の上に履歴を書くと画面が scrollback へ押し上がって重複する＝
+      // 先に端末をリセットし、履歴→full frame の順で描き直す。
+      if (m.hist === 1 && !histGot) {
+        histGot = true;
+        if (painted) term.reset();
+      }
+      let s = "接続済（" + m.cols + "×" + m.rows;
+      if (!histGot) s += "・履歴は次の接続で";
+      else if (m.trunc) s += "・履歴は上限で切れています";
+      else s += "・履歴付き";
+      if (m.scrolled > 0) s += "・ローカルで " + m.scrolled + " 行遡り中→⤓で最新へ";
+      $("stat").textContent = s + "）";
     }
   };
   // META フィルタはページで 1 つ（「履歴は 1 回だけ」を接続をまたいで記憶）。
@@ -407,7 +426,7 @@ function run() {
     // 全ハンドラを「自分が現役 (ws === sock) の時だけ」動かす＝古い
     // 接続の遅延イベントが新しい接続へ干渉しない（relay 側 takeover
     // 修正と同じ規律のブラウザ版）。
-    syncFeed = cmMakeSyncFilter((b) => term.write(b, scheduleLand));
+    syncFeed = cmMakeSyncFilter((b) => { painted = true; term.write(b, scheduleLand); });
     metaFeed.reset();
     sock.onopen = () => {
       if (ws !== sock) return;
@@ -645,6 +664,12 @@ function run() {
     // enter: CR（0x0d）。LF(0x0a) ではない＝herdr 側 pane.send_text と同じ
     // 慣習（DESIGN 実測: \n だと改行にならず送信されない agent がある）。
     enter: [0x0d],
+    // bottom（⤓ 最新へ）: SCROLL フレーム dy=0x7ffe（ワイヤ v2 の予約値）。
+    // 元 pane がローカルで遡り表示のままだと observe はその位置を描くので Web
+    // から最新行が見えない。これを送ると producer が pane.scroll 0 を実行する
+    // （共有状態＝ローカル表示も最下部へ戻る。だから明示ボタンのみ）。旧 PC は
+    // SCROLL を無視する。
+    bottom: [0xff, 0xfe, 0x7f, 0xfe],
   };
   const pad = $("cmpad"), grip = $("cmpad-grip");
   if (pad) {

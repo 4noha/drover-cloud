@@ -126,19 +126,32 @@ const FRAME = "\x1b[?2026h\x1b[2J\x1b[1;1Hlive\x1b[?2026l";
 // --- 1 接続目: META → 履歴 → hist_end → frame（マーカーを chunk 境界で割る） ---
 let metas = [], out = [];
 const feed = cmMakeMetaFilter((p) => metas.push(p), (b) => out.push(Buffer.from(b).toString("latin1")));
-const stream = META("v=2;cols=179;rows=70;trunc=1") + "HIST-1\r\nHIST-2\r\n\r\n" + META("hist_end") + FRAME;
+const H1 = "v=2;cols=179;rows=70;trunc=1;hist=1;scrolled=0";
+const stream = META(H1) + "HIST-1\r\nHIST-2\r\n\r\n" + META("hist_end") + FRAME;
 const all = enc(stream);
 // 3 バイトずつ刻む（OSC 先頭・ST・2026 マーカーが必ず割れる）
 for (let i = 0; i < all.length; i += 3) feed(all.subarray(i, Math.min(all.length, i + 3)));
-eq(metas.join("|"), "v=2;cols=179;rows=70;trunc=1|hist_end", "META が順に onMeta へ渡る:");
+eq(metas.join("|"), H1 + "|hist_end", "META が順に onMeta へ渡る:");
 eq(out.join(""), "HIST-1\r\nHIST-2\r\n\r\n" + FRAME, "1 回目は履歴もフレームも通り OSC は剥がれる:");
 
 // --- 2 接続目（再接続）: 同じ先頭が来るが履歴は捨て、フレームは通す ---
 metas = []; out = [];
 feed.reset();
 feed(all);
-eq(metas.join("|"), "v=2;cols=179;rows=70;trunc=1|hist_end", "再接続でも META は通知される:");
+eq(metas.join("|"), H1 + "|hist_end", "再接続でも META は通知される:");
 eq(out.join(""), FRAME, "再接続の履歴は捨て、フレームだけ通す:");
+
+// --- 遅延履歴: 初回が hist=0（producer が予算内に取れず）なら次の接続の hist=1 を受け入れる ---
+out = [];
+const f3 = cmMakeMetaFilter(() => {}, (b) => out.push(Buffer.from(b).toString("latin1")));
+f3(enc(META("v=2;cols=179;rows=70;trunc=0;hist=0;scrolled=3") + META("hist_end") + FRAME));
+eq(out.join(""), FRAME, "hist=0 の接続はフレームだけ:");
+out = []; f3.reset();
+f3(enc(META(H1) + "LATE-1\r\n" + META("hist_end") + FRAME));
+eq(out.join(""), "LATE-1\r\n" + FRAME, "hist=0 の後の hist=1 は履歴を通す:");
+out = []; f3.reset();
+f3(enc(META(H1) + "LATE-2\r\n" + META("hist_end") + FRAME));
+eq(out.join(""), FRAME, "本文つき履歴を一度通した後は捨てる:");
 
 // --- 旧 producer（META 無し）: 一切手を付けない（OSC 8 等の他の OSC も素通し） ---
 out = [];
@@ -151,8 +164,8 @@ f2(enc("x"));
 eq(out.join(""), "\x1b]8;;\x1b\\abc\x1b]7\x1b[?2026hxyz\x1b]7707x", "部分マーカーが不成立なら後で吐き出す:");
 
 // --- cmParseMeta ---
-const m = cmParseMeta("v=2;cols=179;rows=70;trunc=0");
-eq(m.v, 2, "v:"); eq(m.cols, 179, "cols:"); eq(m.rows, 70, "rows:"); eq(m.trunc, 0, "trunc:");
+const m = cmParseMeta("v=2;cols=179;rows=70;trunc=0;hist=1;scrolled=12");
+eq(m.v, 2, "v:"); eq(m.cols, 179, "cols:"); eq(m.rows, 70, "rows:"); eq(m.trunc, 0, "trunc:"); eq(m.hist, 1, "hist:"); eq(m.scrolled, 12, "scrolled:");
 eq(cmParseMeta("hist_end").hist_end, true, "値なしキー:");
 
 if (fail.length) { console.log(fail.join("\n")); process.exit(1); }
