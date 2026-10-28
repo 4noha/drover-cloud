@@ -49,18 +49,35 @@ async function jget(u) {
   return r.json();
 }
 
-// cmTrackScroll: ライブ行（カーソル）を **ブラウザ native スクロール**で
-// 追従し続ける純粋計算。proxy は bottom-fill 撤去後 *上詰めの短い*
-// フレーム（内容 < 500 行・パディング無＝Python parity）を毎フレーム
+// cmLastContentRow: カーソル行の下に続く実内容（エージェントが出す
+// ヒント/ステータス行等）の最終行を求める純粋関数（node で決定論テスト）。
+// この行数はエージェントごとにバラバラ（固定マージンにできない）なので、
+// 「今届いているフレームで実際に内容がある最終行」を使う。lines は各行を
+// 末尾空白除去した文字列にした配列（index=行番号）。戻り値は必ず cy 以上
+// （カーソル行より上に戻らない＝入力位置自体は常に可視下端の対象のまま）。
+function cmLastContentRow(lines, cy) {
+  for (let r = lines.length - 1; r >= 0; r--) {
+    if (lines[r] !== "") return Math.max(cy, r);
+  }
+  return cy;
+}
+
+// cmTrackScroll: ライブ行（カーソル）とその下の実内容を **ブラウザ native
+// スクロール**で追従し続ける純粋計算。proxy は bottom-fill 撤去後 *上詰め
+// の短い* フレーム（内容 < 500 行・パディング無＝Python parity）を毎フレーム
 // 送り、claude のストリーム/全画面再描画で内容長＝カーソル行が変動
 // する。クライアントが一度しかスクロールを合わせないと:
 //  ・カーソル行が固定スクロールに対し上下する＝**入力位置がズレる**
 //  ・短い内容の下＝固定 500 行グリッドの空き＝**下に黒いエリア**
 // ScrollRenderer の follow/scrollback 不変条件を native スクロールへ
-// 適用して解消する: following 中は沈静バースト毎にカーソル行を可視
+// 適用して解消する: following 中は沈静バースト毎に実内容の下端
+// （s.pinRow。カーソル行の下に出るヒント/ステータス行まで含む）を可視
 // 下端へ再ピン（位置が常に一定＝ズレない・空きを見ない）／ユーザが
 // 履歴へ遡り（カーソルが可視域より下に隠れる）と following 解除＝
 // スクロールを一切動かさず読書を妨げない／最下部へ戻すと再 following。
+// pinRow まで含めるとカーソル行自体が可視域から上に押し出される（ヒント
+// 込みの全体が高さに収まらない）場合は、カーソルを可視下端へ置く従来の
+// ピンへフォールバックする（入力位置が見えることを優先）。
 // 純粋＝node で決定論テスト（合成でなく実 static を抽出）。
 // s.mode: "settle"=沈静後の再ピン / "userscroll"=ユーザ操作後の follow
 //         再判定。返り値 {scrollTop, following} を呼び元が適用する。
@@ -68,18 +85,21 @@ function cmTrackScroll(s) {
   const cellH = s.cellH > 0 ? s.cellH : 1;
   const maxTop = Math.max(0, s.scrollHeight - s.clientHeight);
   const clamp = (t) => (t < 0 ? 0 : t > maxTop ? maxTop : t);
-  const cursorPx = (s.cy + 1) * cellH;             // ライブ行の下端 px
-  const pinTop = clamp(cursorPx - s.clientHeight); // カーソル行を可視下端へ
+  const cursorPx = (s.cy + 1) * cellH;               // ライブ行の下端 px
+  const pinRow = s.pinRow > s.cy ? s.pinRow : s.cy;  // 常に cy 以上（防御）
+  const pinPx = (pinRow + 1) * cellH;                // 実内容（ヒント込み）下端 px
+  let pinTop = clamp(pinPx - s.clientHeight);
+  if (pinTop > s.cy * cellH) pinTop = clamp(cursorPx - s.clientHeight); // 収まらない→カーソル優先
   if (s.mode === "userscroll") {
     // ユーザ操作の結果位置から follow を再判定（スクロールは動かさ
     // ない）。可視下端がカーソル行に届いていれば=ライブ追跡中(緑)、
     // カーソルが可視域より 1 行以上下へ隠れる程遡ったら=履歴閲覧中
     // →follow 解除。プログラム的ピン直後の scroll でも geometry は
-    // viewBottom≈cursorPx となり following=true で不変＝guard 不要。
+    // viewBottom≧cursorPx となり following=true で不変＝guard 不要。
     const viewBottom = s.scrollTop + s.clientHeight;
     return { scrollTop: s.scrollTop, following: viewBottom >= cursorPx - cellH };
   }
-  // mode "settle": following 中だけカーソルを下端へ再ピン。遡り中
+  // mode "settle": following 中だけ下端へ再ピン。遡り中
   // (following=false)はユーザのスクロール位置を一切動かさない。
   if (s.following) return { scrollTop: pinTop, following: true };
   return { scrollTop: s.scrollTop, following: false };
@@ -301,8 +321,23 @@ function run() {
       return ((a.baseY | 0) + (a.cursorY | 0)) | 0; // scrollback:0 で baseY=0
     } catch (e) { return 0; }
   };
+  // pinRow: カーソル行の下に出るヒント/ステータス行（本数はエージェント
+  // ごとに違う）まで含めた実内容の最終行。cmLastContentRow（純粋）に渡す
+  // ため、毎回 WEB_ROWS 行ぶんの文字列配列を作る（180ms スロットル沈静時
+  // のみ呼ぶので頻度は問題にならない）。
+  const pinRow = () => {
+    try {
+      const a = term.buffer.active;
+      const lines = [];
+      for (let r = 0; r < WEB_ROWS; r++) {
+        const line = a.getLine(r);
+        lines.push(line ? line.translateToString(true) : "");
+      }
+      return cmLastContentRow(lines, cursorRow());
+    } catch (e) { return cursorRow(); }
+  };
   const stateNow = (mode) => ({
-    mode, following, cy: cursorRow(),
+    mode, following, cy: cursorRow(), pinRow: pinRow(),
     cellH: host.scrollHeight / WEB_ROWS, // 1 行 px（全高/行数。固定）
     clientHeight: host.clientHeight,
     scrollHeight: host.scrollHeight,

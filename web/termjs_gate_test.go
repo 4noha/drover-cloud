@@ -100,3 +100,67 @@ console.log("OK");
 		t.Fatalf("想定外の出力: %s", out)
 	}
 }
+
+// TestTermJSTrackScroll — cmTrackScroll/cmLastContentRow の真理値表を固定する。
+// 修正前（pinRow 非対応）はこの表のうち「ヒントが収まる時はヒント下端を
+// 可視下端へピン」が落ちることを git stash で確認済み（カーソル行だけを
+// 可視下端へピンしてしまい、下のヒント/ステータス行が見切れる＝今回の
+// 報告「入力窓の下の行数がエージェントごとにバラバラなのに一番下で
+// 切れる」の再現）。
+func TestTermJSTrackScroll(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node が無いので skip（判定表の担保のみ・本番経路は実 relay で確認）")
+	}
+	b, err := os.ReadFile("static/term.js")
+	if err != nil {
+		t.Fatalf("term.js: %v", err)
+	}
+	src := string(b)
+
+	script := extractFunc(t, src, "cmLastContentRow") + "\n" +
+		extractFunc(t, src, "cmTrackScroll") + "\n" + `
+const fail = [];
+const eq = (got, want, msg) => { if (got !== want) fail.push(msg + " got=" + JSON.stringify(got) + " want=" + JSON.stringify(want)); };
+
+// --- cmLastContentRow: ヒント行の本数はエージェントごとに違う前提 ---
+eq(cmLastContentRow(["abc", "", "def", "", "", ""], 0), 2,
+   "末尾の空行を無視し実内容の最終行を返す:");
+eq(cmLastContentRow(["x", "", "", ""], 3), 3,
+   "最終行が cy より上でも cy を下回らない:");
+eq(cmLastContentRow([], 5), 5,
+   "空配列は cy を返す:");
+
+// cellH=10px・clientHeight=5行分(50px)・scrollHeight=500行分(5000px) の共通前提。
+// cy=40（カーソル行）。
+
+// --- ヒントが可視域に収まる場合: ヒント下端(pinRow)を可視下端へピン ---
+eq(cmTrackScroll({
+  mode: "settle", following: true, cy: 40, pinRow: 43,
+  cellH: 10, clientHeight: 50, scrollHeight: 5000, scrollTop: 0,
+}).scrollTop, 390, "ヒントが収まる時はヒント下端を可視下端へピン:");
+
+// --- ヒントが大きすぎて収まらない場合: カーソル優先へフォールバック ---
+eq(cmTrackScroll({
+  mode: "settle", following: true, cy: 40, pinRow: 48,
+  cellH: 10, clientHeight: 50, scrollHeight: 5000, scrollTop: 0,
+}).scrollTop, 360, "収まらない時は従来どおりカーソル行を可視下端へピン:");
+
+// --- pinRow===cy（ヒント無し）: 従来のカーソルピンと同じ結果 ---
+eq(cmTrackScroll({
+  mode: "settle", following: true, cy: 40, pinRow: 40,
+  cellH: 10, clientHeight: 50, scrollHeight: 5000, scrollTop: 0,
+}).scrollTop, 360, "pinRow=cy の時は従来のカーソルピンと同じ結果:");
+
+if (fail.length) { console.log(fail.join("\n")); process.exit(1); }
+console.log("OK");
+`
+	cmd := exec.Command(node, "-e", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("判定表が一致しない:\n%s", out)
+	}
+	if !strings.Contains(string(out), "OK") {
+		t.Fatalf("想定外の出力: %s", out)
+	}
+}
