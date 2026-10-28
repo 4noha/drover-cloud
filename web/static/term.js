@@ -368,17 +368,37 @@ function run() {
   let v2 = false, painted = false, histGot = false;
   const fontOverride = clampNum(qs.get("font"), 0);
   const fitFont = (rows) => {
-    // 元 pane の行数が画面に収まる fontSize を一度だけ決める（収まらなければ
-    // #term-host の native スクロール＋cmTrackScroll が従来どおり面倒を見る）。
+    // 元 pane の行数が **必ず** 画面に収まる fontSize を実測で決める。収まらない
+    // と #term-host が縦スクロール可能になり、スマホの縦スワイプが xterm の
+    // scrollback ではなく host の native スクロールに取られて履歴を遡れない
+    // （2026-10-29 ユーザー報告）。下限 4px＝読めなくてもピンチズームで読む。
     const host = $("term-host");
-    let px = fontOverride || Math.floor(host.clientHeight / rows / 1.25);
-    if (!fontOverride) px = Math.max(8, Math.min(13, px));
-    if (px !== term.options.fontSize) term.options.fontSize = px;
+    if (fontOverride) {
+      if (term.options.fontSize !== fontOverride) term.options.fontSize = fontOverride;
+      return;
+    }
+    let px = Math.min(13, Math.max(4, Math.floor(host.clientHeight / rows / 1.2)));
+    for (; px >= 4; px--) {
+      term.options.fontSize = px;
+      const scr = host.querySelector(".xterm-screen");
+      const h = scr ? scr.getBoundingClientRect().height : 0;
+      if (h === 0 || h <= host.clientHeight) break; // 測れない環境は推定値のまま
+    }
   };
   const onMeta = (payload) => {
     const m = cmParseMeta(payload);
     if (m.v === 2) {
-      if (!v2) { v2 = true; term.options.scrollback = 5000; }
+      if (!v2) {
+        v2 = true;
+        term.options.scrollback = 5000;
+        // v2 は端末が画面に収まる前提＝host の縦 native スクロールを切り、縦
+        // スワイプ／ホイールを xterm（scrollback）に渡す。横パンとピンチズームは
+        // 残す（桁が広い pane をスマホで読むため）。legacy（固定 160×500）は従来
+        // どおり host の native スクロール。
+        const host = $("term-host");
+        host.style.overflowY = "hidden";
+        host.style.touchAction = "pan-x pinch-zoom";
+      }
       if (m.cols > 0 && m.rows > 0 && (term.cols !== m.cols || term.rows !== m.rows)) {
         term.resize(m.cols, m.rows);
       }
