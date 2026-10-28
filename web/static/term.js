@@ -368,10 +368,9 @@ function run() {
   let v2 = false, painted = false, histGot = false;
   const fontOverride = clampNum(qs.get("font"), 0);
   const fitFont = (rows) => {
-    // 元 pane の行数が **必ず** 画面に収まる fontSize を実測で決める。収まらない
-    // と #term-host が縦スクロール可能になり、スマホの縦スワイプが xterm の
-    // scrollback ではなく host の native スクロールに取られて履歴を遡れない
-    // （2026-10-29 ユーザー報告）。下限 4px＝読めなくてもピンチズームで読む。
+    // 元 pane の行数が **必ず** 画面に収まる fontSize を実測で決める（sticky の
+    // 端末要素が host に丸ごと見えていることが、下のプロキシスクロールの前提）。
+    // 下限 4px＝読めなくてもピンチズームで読む。
     const host = $("term-host");
     if (fontOverride) {
       if (term.options.fontSize !== fontOverride) term.options.fontSize = fontOverride;
@@ -391,18 +390,17 @@ function run() {
       if (!v2) {
         v2 = true;
         term.options.scrollback = 5000;
-        // v2 は端末が画面に収まる前提＝host の縦 native スクロールを切り、縦
-        // スワイプ／ホイールを xterm（scrollback）に渡す。横パンとピンチズームは
-        // 残す（桁が広い pane をスマホで読むため）。legacy（固定 160×500）は従来
-        // どおり host の native スクロール。
-        const host = $("term-host");
-        host.style.overflowY = "hidden";
-        host.style.touchAction = "pan-x pinch-zoom";
       }
       if (m.cols > 0 && m.rows > 0 && (term.cols !== m.cols || term.rows !== m.rows)) {
         term.resize(m.cols, m.rows);
       }
       if (m.rows > 0) fitFont(m.rows);
+      // 履歴の遡りは host の native スクロールのプロキシ（下記）。サイズ・フォントが
+      // 確定した **後** に行px を測り直す（古い行px で写像すると最下部がずれる）。
+      enableProxyScroll();
+      cellPx = rowPx() || cellPx;
+      updateSpacer();
+      termToHost(term.buffer.active.viewportY);
       // 履歴が遅れて届く（初回 hist=0 → 次の接続で hist=1）とき、既に描いた
       // 画面の上に履歴を書くと画面が scrollback へ押し上がって重複する＝
       // 先に端末をリセットし、履歴→full frame の順で描き直す。
@@ -566,8 +564,87 @@ function run() {
     scrollHeight: host.scrollHeight,
     scrollTop: host.scrollTop,
   });
-  // 沈静バースト後の再ピン（following 中のみスクロールを動かす）。
+  // ---- v2: 履歴スクロールは host の native スクロールのプロキシ ----
+  // xterm 自身のタッチ/ホイール駆動スクロール（JS で viewport 要素を動かす）は
+  // スマホで当てにならない（ソフトキーボード表示中やピンチズーム中は native に
+  // 視覚ビューポートが動くだけで JS へ届かない。2026-10-29 実機報告）。legacy と
+  // 同じ「ブラウザ任せの native スクロール」に戻し、host のスクロール位置を
+  // xterm の scrollback 行へ写像する:
+  //   端末要素（term.element）を sticky で画面に固定し、その下に履歴ぶんの高さ
+  //   （(buffer 行数 − rows) × 行px）のスペーサーを置く。host.scrollTop / 行px
+  //   = 表示先頭行 → term.scrollToLine。逆向き（xterm 側が動く: ホイール・新規行
+  //   ・scrollOnUserInput で入力時に最下部へ）は term.onScroll → host.scrollTop。
+  //   xterm 自前のタッチ処理は capture で止めて二重に動かさない。
+  // RESIZE は相変わらず送らない（クライアント内で完結）。
+  let spacer = null, cellPx = 0, syncing = false, progUntil = 0;
+  const rowPx = () => {
+    const scr = host.querySelector(".xterm-screen");
+    const h = scr ? scr.getBoundingClientRect().height : 0;
+    return h > 0 && term.rows > 0 ? h / term.rows : 0;
+  };
+  // 行px は沈静時（settle）と未計測時だけ測る（履歴書込中は onScroll が行ごとに
+  // 来るので、毎回 layout を起こさない）。
+  const updateSpacer = () => {
+    if (!spacer) return;
+    if (cellPx <= 0) cellPx = rowPx();
+    if (cellPx <= 0) return;
+    // 端末要素が host より低い（フィット時の余り）ぶんを足して、host の最大
+    // scrollTop がちょうど (buffer 行数 − rows) × 行px になるようにする。これを
+    // 欠くと最下部で line が余りぶん手前（実測 13 行）になる。
+    const extra = Math.max(0, term.buffer.active.length - term.rows) * cellPx;
+    const slack = Math.max(0, host.clientHeight - cellPx * term.rows);
+    const px = Math.round(extra + slack) + "px";
+    if (spacer.style.height !== px) spacer.style.height = px;
+  };
+  const hostToTerm = () => {
+    if (!spacer || syncing || cellPx <= 0) return;
+    // 自分で scrollTop を置いた直後に（非同期で）届く scroll イベントは無視する。
+    // 履歴書込中はスペーサーが伸びる途中の古い位置で届くため、拾うと xterm を
+    // 上へ引き戻して「最下部追従」が外れる（実測）。
+    if (performance.now() < progUntil) return;
+    const line = Math.round(host.scrollTop / cellPx);
+    if (line !== term.buffer.active.viewportY) {
+      syncing = true;
+      try { term.scrollToLine(line); } finally { syncing = false; }
+    }
+  };
+  const termToHost = (ydisp) => {
+    if (!spacer || syncing) return;
+    updateSpacer();
+    if (cellPx <= 0) return;
+    const top = Math.round(ydisp * cellPx);
+    if (Math.abs(host.scrollTop - top) >= 1) {
+      syncing = true;
+      progUntil = performance.now() + 150;
+      try { host.scrollTop = top; } finally { syncing = false; }
+    }
+  };
+  function enableProxyScroll() {
+    if (spacer) return;
+    term.element.style.position = "sticky";
+    term.element.style.top = "0";
+    spacer = document.createElement("div");
+    spacer.id = "sb-spacer";
+    host.appendChild(spacer);
+    // xterm 自前のタッチ/ホイール処理（JS で viewport 要素を動かす）を止め、
+    // host の native スクロールに一本化する（capture で止めるだけ＝preventDefault
+    // はしないので native スクロールは進む）。
+    for (const t of ["touchstart", "touchmove", "touchend", "touchcancel", "wheel"]) {
+      host.addEventListener(t, (e) => e.stopPropagation(), { capture: true, passive: true });
+    }
+    term.onScroll((ydisp) => termToHost(ydisp));
+    updateSpacer();
+  }
+
+  // 沈静バースト後の再ピン（legacy: following 中のみスクロールを動かす。v2 は
+  // ピンせずスペーサーの高さだけ追従）。
   const settle = () => {
+    if (v2) {
+      cellPx = rowPx() || cellPx;
+      updateSpacer();
+      termToHost(term.buffer.active.viewportY); // 行px が変わっていれば host を合わせ直す
+      return;
+    }
     const r = cmTrackScroll(stateNow("settle"));
     following = r.following;
     if (r.scrollTop !== host.scrollTop) host.scrollTop = r.scrollTop;
@@ -583,6 +660,7 @@ function run() {
   // 位置は動かさない）。内容成長は scrollTop を変えず scroll を発火
   // しない＝このハンドラはピン代入かユーザ操作のみ＝geometry で安全。
   host.addEventListener("scroll", () => {
+    if (v2) { hostToTerm(); return; }
     const r = cmTrackScroll(stateNow("userscroll"));
     following = r.following;
   }, { passive: true });
