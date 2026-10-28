@@ -164,8 +164,15 @@ f2(enc("x"));
 eq(out.join(""), "\x1b]8;;\x1b\\abc\x1b]7\x1b[?2026hxyz\x1b]7707x", "部分マーカーが不成立なら後で吐き出す:");
 
 // --- cmParseMeta ---
-const m = cmParseMeta("v=2;cols=179;rows=70;trunc=0;hist=1;scrolled=12");
-eq(m.v, 2, "v:"); eq(m.cols, 179, "cols:"); eq(m.rows, 70, "rows:"); eq(m.trunc, 0, "trunc:"); eq(m.hist, 1, "hist:"); eq(m.scrolled, 12, "scrolled:");
+const m = cmParseMeta("v=2;cols=179;rows=70;trunc=0;hist=1;hlines=930;scrolled=12");
+eq(m.v, 2, "v:"); eq(m.cols, 179, "cols:"); eq(m.rows, 70, "rows:"); eq(m.trunc, 0, "trunc:"); eq(m.hist, 1, "hist:"); eq(m.hlines, 930, "hlines:"); eq(m.scrolled, 12, "scrolled:");
+// hist=1;hlines=0（scrollback が空）の区間は本文なしでも「受領済み」扱い＝次の接続の履歴は捨てる
+out = [];
+const f4 = cmMakeMetaFilter(() => {}, (b) => out.push(Buffer.from(b).toString("latin1")));
+f4(enc(META("v=2;cols=179;rows=70;trunc=0;hist=1;hlines=0;scrolled=0") + META("hist_end") + FRAME));
+f4.reset();
+f4(enc(META(H1) + "STRAY-1\r\n" + META("hist_end") + FRAME));
+eq(out.join(""), FRAME + FRAME, "空の hist=1 を受領した後の履歴は捨てる:");
 eq(cmParseMeta("hist_end").hist_end, true, "値なしキー:");
 
 if (fail.length) { console.log(fail.join("\n")); process.exit(1); }

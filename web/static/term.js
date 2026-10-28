@@ -369,12 +369,15 @@ function run() {
       // 履歴が遅れて届く（初回 hist=0 → 次の接続で hist=1）とき、既に描いた
       // 画面の上に履歴を書くと画面が scrollback へ押し上がって重複する＝
       // 先に端末をリセットし、履歴→full frame の順で描き直す。
+      // hist=1 は「予算内に取得できた」（hlines=0 でも受領済み＝scrollback が空な
+      // pane。Claude Code 系は可視画面未満しか保持されず常に 0 になり得る）。
       if (m.hist === 1 && !histGot) {
         histGot = true;
-        if (painted) term.reset();
+        if (painted && m.hlines > 0) term.reset();
       }
       let s = "接続済（" + m.cols + "×" + m.rows;
       if (!histGot) s += "・履歴は次の接続で";
+      else if (m.hist === 1 && !(m.hlines > 0)) s += "・遡れる履歴なし";
       else if (m.trunc) s += "・履歴は上限で切れています";
       else s += "・履歴付き";
       if (m.scrolled > 0) s += "・ローカルで " + m.scrolled + " 行遡り中→⤓で最新へ";
