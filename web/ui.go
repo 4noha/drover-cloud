@@ -151,13 +151,17 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  #cmpad button:active{background:#3a3a44}
  #cmpad button.esc{font-size:14px;color:#f3b4b4;background:#3a1f22;
   border-color:#5a2a2e}
+ /* セミオート続行（つづけて自動入力）の切替。ON は緑系で点灯。 */
+ #cmpad button.on{color:#b4f3c4;background:#1f3a2a;border-color:#2e5a3e}
+ #auto{display:none;color:#b4f3c4;font-size:12px;padding:1px 6px;
+  border:1px solid #2e5a3e;border-radius:10px;background:#1f3a2a}
  #cmpad-grip{width:100%;text-align:center;color:#777;font-size:12px;
   line-height:12px;cursor:move;padding:2px 0}
 </style>
 <body>
 <div id="bar">
  <a href="/">← 一覧</a>
- <span id="title"></span><span id="pos"></span>
+ <span id="title"></span><span id="pos"></span><span id="auto" title="セミオート続行 ON（止まると「つづけて」を自動入力）">⟳ auto</span>
  <span id="ctrls">
   <button class="nav" id="prev" title="前のコンソール">‹</button>
   <button class="nav" id="next" title="次のコンソール">›</button>
@@ -189,6 +193,7 @@ const termHTML = `<!doctype html><html lang="ja"><meta charset="utf-8">
  </div>
  <div class="cmrow">
   <button data-k="bottom" title="最新へ（元 pane のローカル表示も最下部に戻る）" aria-label="最新へ">⤓</button>
+  <button data-action="semiauto" id="semiauto" title="セミオート続行の ON/OFF（止まると「つづけて」を自動入力。PC 側の Ctrl+Alt+A と同じ）" aria-label="セミオート切替">⟳</button>
  </div>
 </div>
 <script src="/static/xterm.js"></script>

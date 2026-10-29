@@ -251,3 +251,32 @@ console.log("OK");
 		t.Fatalf("想定外の出力: %s", out)
 	}
 }
+
+// cmSemiAutoView の真理値表（セミオート続行の表示状態。session doc の semi_auto と
+// 投入中フラグだけで決まる純粋関数）。
+func TestTermJSSemiAutoView(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node が無いので skip")
+	}
+	b, err := os.ReadFile("static/term.js")
+	if err != nil {
+		t.Fatalf("term.js: %v", err)
+	}
+	script := extractFunc(t, string(b), "cmSemiAutoView") + `
+const out = [];
+for (const [on, pending] of [[true,false],[false,false],[undefined,false],[true,true],[false,true]]) {
+  const v = cmSemiAutoView(on, pending);
+  out.push([String(on), String(pending), v.badge, v.lit, v.disabled, v.label, v.next].join(","));
+}
+console.log(out.join("\n"));
+`
+	outb, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, outb)
+	}
+	want := "true,false,true,true,false,⟳,0\nfalse,false,false,false,false,⟳,1\nundefined,false,false,false,false,⟳,1\ntrue,true,true,true,true,…,0\nfalse,true,false,false,true,…,1"
+	if got := strings.TrimSpace(string(outb)); got != want {
+		t.Fatalf("truth table:\n got %q\nwant %q", got, want)
+	}
+}

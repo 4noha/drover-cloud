@@ -66,6 +66,10 @@ var ValidCommands = map[string]bool{
 	// restart-agent の 3 ボタンを 1 つに集約したもの（個別命令も allowlist には
 	// 残す＝CLI や旧 UI・トラブルシュートから引き続き投げられる）。
 	"update-all": true,
+	// セミオート続行（herdr-drover autocontinue）の pane 単位 ON/OFF。sid 必須・
+	// Args["on"]="1"/"0"（無ければ反転）。Web コンソールの ⟳ ボタンと devices の表示が
+	// 使う。agent 側の実体は herdr-drover internal/commands の DoSemiAuto。
+	"semi-auto": true,
 
 	// ── 一般化後の命令名（v0.1.11〜）────────────────────────────────
 	// 一般化に伴い "agent" という語がコーディングエージェントを指すようになった

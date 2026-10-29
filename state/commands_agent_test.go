@@ -59,3 +59,14 @@ func TestValidAgentsIsCanonical21(t *testing.T) {
 		}
 	}
 }
+
+// semi-auto（セミオート続行の pane 単位 ON/OFF）は allowlist にあり、旧名写像の
+// 対象ではない（そのまま通る）。
+func TestSemiAutoCommandValid(t *testing.T) {
+	if !ValidCommands["semi-auto"] {
+		t.Fatal("semi-auto が allowlist に無い")
+	}
+	if c, a, legacy := NormalizeCommand("semi-auto", ""); c != "semi-auto" || a != "" || legacy {
+		t.Fatalf("NormalizeCommand(semi-auto) = (%q,%q,%v)", c, a, legacy)
+	}
+}

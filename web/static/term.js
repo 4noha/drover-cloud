@@ -318,6 +318,19 @@ function setupSwitch() {
   }).catch(() => { /* 切替不可でもターミナルは使える */ });
 }
 
+// cmSemiAutoView は session doc の semi_auto と「投入中」から表示状態を決める
+// （純粋関数・node ゲートで真理値表を固定）。
+//   on: バッジ表示＋ボタン点灯 / pending: ボタン無効＋「…」 / next: 次に投入する on 値
+function cmSemiAutoView(on, pending) {
+  return {
+    badge: on === true,
+    lit: on === true,
+    disabled: pending === true,
+    label: pending === true ? "…" : "⟳",
+    next: on === true ? "0" : "1",
+  };
+}
+
 function run() {
   if (!pc || !sid) { $("stat").textContent = "pc/sid がありません"; return; }
   const label = dir ? (dir + " — " + pc) : (pc + " : " + sid);
@@ -438,6 +451,13 @@ function run() {
   // BUG-4: セッションが動いているか（status doc の is_active）。監視再接続の
   // 条件に使う。push が使えない環境では false のままで従来動作に degrade。
   let sessionActive = false;
+  // セミオート続行の表示状態（session doc の semi_auto。投入中は pending）。
+  let semiAuto = false, semiAutoPending = false;
+  const renderSemiAuto = () => {
+    const v = cmSemiAutoView(semiAuto, semiAutoPending);
+    const badge = $("auto"); if (badge) badge.style.display = v.badge ? "" : "none";
+    const b = $("semiauto"); if (b) { b.classList.toggle("on", v.lit); b.disabled = v.disabled; b.textContent = v.label; }
+  };
   // 相手 PC が画像貼付を受け付けるか（status doc の image_paste）。
   // null=未確定（doc 未着 or push 無効）／true=対応／false=無効。
   // 従来は送信キューに載せただけで「Ctrl+V 注入」と表示していたが、drover は
@@ -700,6 +720,10 @@ function run() {
             // producer は有効な時だけ image_paste を載せる（無効は「載せない」
             // で表現＝後方互換）。doc が来た時点で false は確定情報。
             imagePasteOK = d.image_paste === true;
+            // semi_auto も同じ規律（ON の pane にだけ true が載る）。
+            semiAuto = d.semi_auto === true;
+            semiAutoPending = false;
+            renderSemiAuto();
           }
         } catch (e) { /* 取れなくても push 再接続は従来どおり効く */ }
         requestConnect("更新push");
@@ -805,6 +829,35 @@ function run() {
     pad.querySelectorAll('button[data-action="reload"]').forEach((b) => {
       b.addEventListener("click", () => { location.reload(); });
     });
+    // semiauto（⟳）: セミオート続行の ON/OFF を遠隔命令 semi-auto で切り替える。
+    // 表示は session doc の semi_auto（onSnapshot）に従う＝投入後は daemon が
+    // 即 re-scan して doc を更新するまで「…」で待つ（楽観更新はしない）。
+    const saB = $("semiauto");
+    if (saB) {
+      saB.addEventListener("click", async () => {
+        if (semiAutoPending) return;
+        const v = cmSemiAutoView(semiAuto, false);
+        semiAutoPending = true;
+        renderSemiAuto();
+        try {
+          const body = new URLSearchParams({ pc, cmd: "semi-auto", sid, on: v.next });
+          const r = await fetch("/api/command", {
+            method: "POST", headers: { Accept: "application/json",
+              "Content-Type": "application/x-www-form-urlencoded" },
+            body: body.toString(),
+          });
+          if (r.status === 401) { location.href = "/login"; return; }
+          if (!r.ok) throw new Error("投入失敗 " + r.status);
+          $("stat").textContent = "semi-auto " + (v.next === "1" ? "ON" : "OFF") + " 投入（反映まで数秒）";
+          // doc 更新が来なければ 15s でボタンを戻す（古い PC は命令を知らない）。
+          setTimeout(() => { if (semiAutoPending) { semiAutoPending = false; renderSemiAuto();
+            $("stat").textContent = "semi-auto: PC 側が応答しません（herdr-drover が古い可能性）"; } }, 15000);
+        } catch (e) {
+          semiAutoPending = false; renderSemiAuto();
+          if (e.message !== "unauth") alert("エラー: " + e.message);
+        }
+      });
+    }
     // 位置の復元（保存済みなら left/top 絶対指定へ切替）。viewport 外に
     // ならないよう clamp（端末回転/リサイズで枠外固定を防ぐ）。
     const clampPad = (x, y) => [

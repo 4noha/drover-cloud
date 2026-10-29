@@ -183,6 +183,10 @@ async function main() {
           const lbl = el("span", null, dir);
           // ● に集約: 稼働中=緑（従来どおり）/ 更新あり=赤 / idle最新=無
           { const sd = statusDot(x.is_active, x.cm_version); if (sd) lbl.appendChild(sd); }
+          // セミオート続行 ON の pane（producer は ON の時だけ semi_auto=true を載せる）。
+          if (x.semi_auto === true) {
+            lbl.appendChild(el("span", { className: "semi-auto", title: "セミオート続行 ON（止まると「つづけて」を自動入力）" }, " ⟳"));
+          }
           row.appendChild(lbl);
           const right = el("span");
           const pre = diagPre(x);

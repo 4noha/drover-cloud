@@ -439,9 +439,25 @@ func (s *Server) apiCommand(w http.ResponseWriter, r *http.Request, t webauth.To
 		http.Error(w, `{"error":"bad command"}`, http.StatusBadRequest)
 		return
 	}
+	// on は semi-auto 専用の任意引数（"1"/"0"。無ければ agent 側で反転）。他の
+	// 命令では無視する（Args を持ち込まない＝既存経路は PushCommand のまま無改変）。
+	var args map[string]string
+	if on := r.FormValue("on"); on != "" {
+		if cmd != "semi-auto" || (on != "1" && on != "0") {
+			http.Error(w, `{"error":"bad on"}`, http.StatusBadRequest)
+			return
+		}
+		args = map[string]string{"on": on}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	id, err := s.st.PushCommand(ctx, pc, cmd, sid, agent, t.PC)
+	var id string
+	var err error
+	if args != nil {
+		id, err = s.st.PushCommandArgs(ctx, pc, cmd, sid, agent, t.PC, "web", args)
+	} else {
+		id, err = s.st.PushCommand(ctx, pc, cmd, sid, agent, t.PC)
+	}
 	if err != nil {
 		http.Error(w, `{"error":"firestore"}`, http.StatusInternalServerError)
 		return
