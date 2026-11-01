@@ -232,6 +232,24 @@ function cmParseMeta(payload) {
   return o;
 }
 
+// 画像の MIME → IMAGE frame の ext コード（producer の imageExtClass と同値: 1=png 2=jpeg 3=gif）。
+function cmImageExt(type) {
+  return { "image/png": 1, "image/jpeg": 2, "image/gif": 3 }[type] || 0;
+}
+
+// IMAGE frame: 0xff 0xfd | u32BE len | u8 ext | bytes（producer の cmwire と同一）。
+function cmImageFrame(buf, code) {
+  const fr = new Uint8Array(7 + buf.length);
+  fr[0] = 0xff; fr[1] = 0xfd;
+  fr[2] = (buf.length >>> 24) & 0xff;
+  fr[3] = (buf.length >>> 16) & 0xff;
+  fr[4] = (buf.length >>> 8) & 0xff;
+  fr[5] = buf.length & 0xff;
+  fr[6] = code;
+  fr.set(buf, 7);
+  return fr;
+}
+
 // cmReconnectGate: 再接続して良いかの純粋判定（node で決定論テスト）。
 // データ線は無通信 30s で quiescence 切断される設計（near-$0）なので、
 // **閉じたら張りっぱなしに戻さない**。張り直すのは契機（Firestore push
@@ -908,23 +926,15 @@ function run() {
   // proxy へ。proxy がリモートホストのクリップボードへ載せ Ctrl+V 注入
   // で claude に添付（パス文字列では添付不可＝実機確定）。サーバ側
   // WebImagePaste 既定 off の時は無視される。
-  const extOf = { "image/png": 1, "image/jpeg": 2, "image/gif": 3 };
   const sendImageBlob = async (blob) => {
     if (!blob) return false;
-    const code = extOf[blob.type];
+    const code = cmImageExt(blob.type);
     if (!code) { $("stat").textContent = "未対応画像形式(" + blob.type + ")"; return false; }
     const buf = new Uint8Array(await blob.arrayBuffer());
     if (buf.length === 0 || buf.length > (8 << 20)) {
       $("stat").textContent = "画像サイズ超過/空"; return false;
     }
-    const fr = new Uint8Array(7 + buf.length);
-    fr[0] = 0xff; fr[1] = 0xfd;
-    fr[2] = (buf.length >>> 24) & 0xff;
-    fr[3] = (buf.length >>> 16) & 0xff;
-    fr[4] = (buf.length >>> 8) & 0xff;
-    fr[5] = buf.length & 0xff;
-    fr[6] = code;
-    fr.set(buf, 7);
+    const fr = cmImageFrame(buf, code);
     // 相手が受け付けないと分かっているなら送らない（8MB を無駄に流さない）。
     // ⚠ 分かっている時だけ止める。imagePasteOK===null（doc 未着／push 無効）は
     //   「対応していない」証拠ではないので送る＝機能を勝手に塞がない。

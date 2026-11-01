@@ -280,3 +280,40 @@ console.log(out.join("\n"));
 		t.Fatalf("truth table:\n got %q\nwant %q", got, want)
 	}
 }
+
+// TestTermJSImageFrame — Web の画像送信が組む IMAGE frame（cmImageFrame/cmImageExt）を
+// 実 node で評価し、producer 側（herdr-drover internal/bridge/cmwire）が受け取る
+// ワイヤのバイト列そのもの（golden）と一致することを固定する。producer 側にも同じ
+// golden を食わせるテストがある（TestCMWireImageGoldenFromBrowser）＝両端が同じバイトを見る。
+func TestTermJSImageFrame(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node が無いので skip")
+	}
+	b, err := os.ReadFile("static/term.js")
+	if err != nil {
+		t.Fatalf("term.js: %v", err)
+	}
+	src := string(b)
+	script := extractFunc(t, src, "cmImageExt") + "\n" + extractFunc(t, src, "cmImageFrame") + "\n" + `
+const hex = (u) => Buffer.from(u).toString("hex");
+const fail = [];
+const eq = (got, want, msg) => { if (got !== want) fail.push(msg + " got=" + got + " want=" + want); };
+eq(hex(cmImageFrame(Uint8Array.from([1,2,3,4,5]), cmImageExt("image/png"))),
+   "fffd000000050101020304" + "05", "png 5B:");
+eq(hex(cmImageFrame(Uint8Array.from([9]), cmImageExt("image/jpeg"))), "fffd0000000102" + "09", "jpeg 1B:");
+eq(hex(cmImageFrame(Uint8Array.from([7,7]), cmImageExt("image/gif"))), "fffd0000000203" + "0707", "gif 2B:");
+// 長さは u32 big-endian（65537B → 00 01 00 01）。
+const big = cmImageFrame(new Uint8Array(65537), 1);
+eq(hex(big.subarray(0, 7)), "fffd00010001" + "01", "長さの BE:");
+eq(big.length, 7 + 65537, "全長:");
+eq(cmImageExt("image/webp"), 0, "未対応形式は 0:");
+eq(cmImageExt(""), 0, "空は 0:");
+if (fail.length) { console.log(fail.join("\n")); process.exit(1); }
+console.log("OK");
+`
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "OK") {
+		t.Fatalf("IMAGE frame が golden と一致しない: %v\n%s", err, out)
+	}
+}
