@@ -45,7 +45,7 @@ func Dial(ctx context.Context, baseURL, sid, role string) (net.Conn, error) {
 	// フラグメント区切りとして解釈され role が届かず relay が 400 を返す（実障害で
 	// 確認）。エスケープでフラグメント化を防ぐ。role は source/viewer 固定＝安全。
 	u := baseURL + "/session?sid=" + url.QueryEscape(sid) + "&role=" + role
-	c, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{})
+	c, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{CompressionMode: viewerCompression(role)})
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func DialViewerFrom(ctx context.Context, baseURL, sid, sourcePC string) (net.Con
 	if sourcePC != "" {
 		u += "&spc=" + url.QueryEscape(sourcePC)
 	}
-	c, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{})
+	c, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{CompressionMode: viewerCompression("viewer")})
 	if err != nil {
 		return nil, err
 	}
@@ -148,4 +148,14 @@ func idlePump(a, b io.ReadWriteCloser, idle time.Duration) {
 			}
 		}
 	}
+}
+
+// viewerCompression は viewer だけ permessage-deflate を申し出る。課金される外向き
+// 転送は relay→viewer（画面描画）で、source→relay（入り）は無料＝source 側
+// （各 PC の agent）は CPU を使って圧縮しない。relay が対応しなければ無圧縮に落ちる。
+func viewerCompression(role string) websocket.CompressionMode {
+	if role == "viewer" {
+		return websocket.CompressionNoContextTakeover
+	}
+	return websocket.CompressionDisabled
 }

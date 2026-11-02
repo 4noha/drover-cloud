@@ -32,6 +32,9 @@ type Server struct {
 	// Firestore 無し構成）。本番は state.CheckRelayGrant を注入。
 	Grant func(ctx context.Context, sid, role string) bool
 
+	// Compression は Accept する WS の permessage-deflate モード（NewServer 既定 NoContextTakeover）。
+	Compression websocket.CompressionMode
+
 	// SlaveGate は slave（共用 PC）認可の seam（既定 nil＝今日の挙動）。
 	// /session で **Authorization: Bearer ヘッダが在る時のみ** 参照される。
 	//   handled=false … slave トークン無し ⇒ 既存 Grant 経路へフォール
@@ -59,7 +62,14 @@ type sess struct {
 	change chan struct{}
 }
 
-func NewServer() *Server { return &Server{sessions: map[string]*sess{}} }
+// NewServer は圧縮有効（permessage-deflate）の relay を返す。端末の画面描画は
+// 反復の多いテキストで、Cloud Run の外向き転送料（月 ¥5 万規模）の大半が
+// relay→viewer のこの流れ。相手が対応しない/要求しなければ自動で無圧縮に落ちる
+// （古いクライアント・Safari は従来どおり）。NoContextTakeover＝接続ごとの
+// 常駐メモリ無し（メッセージごとに pool の writer を借りる）。
+func NewServer() *Server {
+	return &Server{sessions: map[string]*sess{}, Compression: websocket.CompressionNoContextTakeover}
+}
 
 // ServeHTTP は GET /session?sid=<id>&role=source|viewer を WSS 化。
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +112,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Accept は WS をアップグレードして sid/role でペアリング中継する
 // （Web の認証済 /ws viewer からも再利用＝relay 本体は無改変）。
 func (s *Server) Accept(w http.ResponseWriter, r *http.Request, sid, role string) {
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: s.Compression})
 	if err != nil {
 		return
 	}
