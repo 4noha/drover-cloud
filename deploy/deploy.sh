@@ -67,7 +67,7 @@ WKEY="$(cat "$KEYF")"
 #   この 2 キーだけならどちらでも新規サービスは動くが、既存サービスへの
 #   再実行を常に安全にするため --update-env-vars で統一する。
 gcloud run deploy "$SERVICE" --project="$PROJECT" --region="$REGION" \
-  --image="$IMG" --min-instances=0 --max-instances=4 \
+  --image="$IMG" --min-instances=0 --max-instances=4 --concurrency=250 \
   --cpu-throttling --timeout=3600 --allow-unauthenticated --port=8080 \
   --update-env-vars="GCP_PROJECT=${PROJECT},WEB_SIGNING_KEY=${WKEY}"
 
