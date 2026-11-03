@@ -237,6 +237,19 @@ func TestSlaveEndpointsE2E(t *testing.T) {
 	if !st.SlaveGrantValid(ctx, pc, "sidA#inj") {
 		t.Fatal("#inj grant が full sid で pc 名前空間に書かれていない")
 	}
+	// `#inj@<viewer pc>`（herdr-drover v0.5.48〜・見る側 PC ごとの枠）も base 所有権で通す。
+	// v0.5.48〜v0.5.51 の間ここが 403 で、slave のセッションの ↗窓が止まっていた（2026-11-03）。
+	if code, _ := req(t, "POST", ts.URL+"/slave/grant", tok,
+		map[string]any{"sid": "sidA#inj@mac-studio-herdr", "ttl_seconds": 60}); code != 200 {
+		t.Fatalf("自 sid の #inj@<pc> grant が %d（base 所有で 200 のはず）", code)
+	}
+	if !st.SlaveGrantValid(ctx, pc, "sidA#inj@mac-studio-herdr") {
+		t.Fatal("#inj@<pc> grant が full sid で pc 名前空間に書かれていない")
+	}
+	if code, _ := req(t, "POST", ts.URL+"/slave/grant", tok,
+		map[string]any{"sid": "not-mine#inj@mac-studio-herdr", "ttl_seconds": 60}); code != 403 {
+		t.Fatalf("未所有 sid の #inj@<pc> grant が %d（403 のはず）", code)
+	}
 	if code, _ := req(t, "POST", ts.URL+"/slave/grant", tok,
 		map[string]any{"sid": "not-mine#inj", "ttl_seconds": 60}); code != 403 {
 		t.Fatalf("未所有 #inj の grant が %d（403 のはず）", code)

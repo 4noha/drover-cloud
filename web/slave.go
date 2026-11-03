@@ -25,6 +25,19 @@ var slaveWakeHold = 25 * time.Second
 // 注入経路にも出す＝相手 webterm の 403 respawn を根治）。
 const injSuffix = "#inj"
 
+// injBaseSID は派生 sid `<sid>#inj`（従来）／`<sid>#inj@<viewer pc>`（herdr-drover v0.5.48〜・
+// 見る側 PC ごとに relay の枠を分ける）から base sid を取り出す。exact-match（区切りの直後が
+// 末尾か `@`）のみ。それ以外はそのまま返す。
+// ⚠ v0.5.48〜v0.5.51 の間、ここが `#inj` だけを剥がしていたため `#inj@<pc>` の grant が 403 になり、
+// slave のセッションの ↗窓が「接続中」のまま止まっていた（2026-11-03 実測）。
+func injBaseSID(sid string) string {
+	base, rest, found := strings.Cut(sid, injSuffix)
+	if found && base != "" && (rest == "" || strings.HasPrefix(rest, "@")) {
+		return base
+	}
+	return sid
+}
+
 // slaveGuard は RS256 bearer 必須ラッパ（apiGuard の slave 版）。enrollSA
 // 未設定なら fail-closed 404。検証済 pc を handler へ渡す。失効（revoked/{pc}
 // または slaves/{pc}.revoked）は 403。Content-Type は各 handler が設定する
@@ -375,7 +388,7 @@ func (s *Server) slaveGrant(w http.ResponseWriter, r *http.Request, pc string) {
 	// #inj（注入の派生 sid）は base sid の所有権で判定＝slave が自 session を
 	// 注入経路にも配信できる。grant は full sid（…#inj）で書く（SlaveGate が
 	// full sid で SlaveGrantValid を引き slaveSessionKey(pc,full sid) でペア）。
-	if !s.st.SessionOwnedBy(ctx, pc, strings.TrimSuffix(body.SID, injSuffix)) {
+	if !s.st.SessionOwnedBy(ctx, pc, injBaseSID(body.SID)) {
 		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
