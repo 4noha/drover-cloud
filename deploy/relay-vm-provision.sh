@@ -40,5 +40,5 @@ $HOST {
 	reverse_proxy 127.0.0.1:8080
 }
 CADDY
-sudo systemctl daemon-reload && sudo systemctl enable --now drover-relay && sudo systemctl restart caddy && sleep 2 && systemctl is-active drover-relay caddy && curl -s http://127.0.0.1:8080/"
+sudo systemctl daemon-reload && sudo systemctl enable drover-relay && sudo systemctl restart drover-relay && sudo systemctl restart caddy && sleep 2 && systemctl is-active drover-relay caddy && curl -s http://127.0.0.1:8080/"
 echo "== TLS（Let's Encrypt は DNS が通ってから数十秒）"; sleep 5; curl -s --max-time 20 https://$HOST/ || echo "（まだ。DNS/証明書を待って再実行: curl https://$HOST/）"
