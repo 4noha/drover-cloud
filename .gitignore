@@ -8,3 +8,4 @@ web_signing_key
 
 # === エージェントのローカル設定(PC ごとの判断なので載せない) ===
 .codex/
+dist/
