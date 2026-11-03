@@ -157,11 +157,16 @@ PROJECT=<gcp project> RELAY_HOST=<ホスト名> sh deploy/relay-vm-provision.sh 
 curl https://<ホスト名>/                                 # → ok relay-only
 ```
 
-切替（全 PC が herdr-drover v0.5.51 以上であること）:
-Firestore `settings/relay` の `url` に `wss://<ホスト名>` を書く（`state.SetRelayURL`）。
-master の agent は real-time、slave は `/slave/revoked` の応答、↗窓は次の接続、Cloud Run の
-Web `/ws` は次の接続から VM を使う。**戻すのは `url` を空にするだけ**（各自の設定へ戻る）。
-VM が落ちている間は Cloud Run に戻せば従来どおり動く。
+切替（全 PC が herdr-drover v0.5.52 以上であること）:
+1. Firestore `settings/relay` の `url` に `wss://<ホスト名>` を書く（`state.SetRelayURL`）＝WS の中継。
+   master の agent は real-time、slave は `/slave/revoked` の応答、↗窓は次の接続、Cloud Run の
+   Web `/ws` は次の接続から VM を使う。
+2. 同 `http_url` に `https://<ホスト名>` を書く（`state.SetRelayHTTPURL`）＝slave の HTTP API（/slave/*）。
+   slave のロングポール（25 秒保持）は Cloud Run では「処理中のリクエスト」として CPU 課金されるため、
+   これを書かないと Cloud Run の 1 vCPU 分が残る。VM の relay-only は ENROLL_SA_JSON_B64 があれば
+   /slave/* を載せる。slave は切替先に届かない時、設定の URL（Cloud Run）で settings を読み直す。
+**戻すのは `url` / `http_url` を空にするだけ**（各自の設定へ戻る）。VM が落ちている間は
+Cloud Run に戻せば従来どおり動く。
 
 確認: VM の `sudo journalctl -u drover-relay -f`、Cloud Run の `container/instance_count` が
 WS 接続が無くなって 0 に落ちること。
