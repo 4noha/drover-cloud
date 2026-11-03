@@ -12,7 +12,8 @@
 #   2. Firestore Native DB 作成（未作成なら）
 #   3. Artifact Registry リポジトリ作成（cm）
 #   4. Cloud Build で cmd/relay/Dockerfile をビルド＆push
-#   5. Cloud Run デプロイ（min-instances=0 / cpu-throttling /
+#   5. Cloud Run デプロイ（min-instances=0 / cpu-throttling / concurrency=250＝WS 常時接続を
+#      1 台に寄せる / memory=256Mi＝実測 p99 13% of 512Mi（2026-11-03）/
 #      timeout=3600 / allow-unauthenticated。sid は claude UUID で
 #      推測困難、wake 制御は Firestore 認証で別途防御）
 #   6. relay URL を表示（CLOUD_RELAY_URL に wss:// で設定）
@@ -67,7 +68,7 @@ WKEY="$(cat "$KEYF")"
 #   この 2 キーだけならどちらでも新規サービスは動くが、既存サービスへの
 #   再実行を常に安全にするため --update-env-vars で統一する。
 gcloud run deploy "$SERVICE" --project="$PROJECT" --region="$REGION" \
-  --image="$IMG" --min-instances=0 --max-instances=4 --concurrency=250 \
+  --image="$IMG" --min-instances=0 --max-instances=4 --concurrency=250 --memory=256Mi \
   --cpu-throttling --timeout=3600 --allow-unauthenticated --port=8080 \
   --update-env-vars="GCP_PROJECT=${PROJECT},WEB_SIGNING_KEY=${WKEY}"
 
