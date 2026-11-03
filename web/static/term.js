@@ -393,6 +393,12 @@ function run() {
   // ⚠ サイズを producer へ送る RESIZE は従来どおり接続時 1 回だけ（不変条件）。
   //   以下の fontSize 調整は **クライアント内だけ**で完結し、RESIZE を再送しない。
   const HELLO_V2 = new Uint8Array([0xff, 0xfe, 0x7f, 0xff]);
+  // 履歴は **ページにつき 1 回だけ** 要る。本文つき履歴を受け取った後の再接続では
+  // 「履歴なし v2」（SCROLL dy=0x7ffc＝bridge.HelloNoHistDy）を HELLO_V2 の直後に
+  // 送る＝producer は META だけ流して履歴本文（pane.read・最大 1000 行）を省く
+  // （2026-11-03: 再接続のたびに数百 KB の履歴を流して捨てていた）。旧 producer は
+  // SCROLL として無視する（従来どおり履歴が流れ、metaFilter が捨てる＝互換）。
+  const HELLO_V2_NOHIST = new Uint8Array([0xff, 0xfe, 0x7f, 0xfc]);
   // v2: v2 モードに入ったか／painted: 何か描いたか／histGot: 本文つき履歴を
   // 受け取ったか（producer は長寿命 pane の pane.read が遅い（4〜16s 実測）と
   // 初回接続を hist=0 で先に描き、次の接続で hist=1 を送ってくる）。
@@ -512,6 +518,7 @@ function run() {
       // URL バーで再送しない（暴走ループを断つ核心）。v2 producer は
       // サイズ要求を無視して元 pane 実サイズで応える。
       sock.send(HELLO_V2);
+      if (histGot) sock.send(HELLO_V2_NOHIST);
       sock.send(resizeFrame(WEB_ROWS, WEB_COLS));
       flushQ();
       $("stat").textContent = "接続済";
@@ -752,16 +759,18 @@ function run() {
   // ---- BUG-4: 「出力が再開した」を伝える経路が無い問題への対処。
   // status doc は content_hash が変わった時しか書かれず、その中身に出力は
   // 含まれない（producer が揮発フィールドを載せないのは near-$0 の設計）。
-  // よってエージェントが working のまま 30s 以上黙る（＝思考中）と PC 側
-  // bridge の DefaultIdle=30s で線が閉じ、**出力が再開しても push が飛ばない**
-  // ＝ブラウザは張り直さない。ユーザから見ると「途中でフッと止まる」。
+  // よってエージェントが working のまま無通信自切断（PC 側 bridge の DefaultIdle。
+  // 2026-11-03 までは 30s、以後 15 分）より長く黙る（＝思考中）と線が閉じ、
+  // **出力が再開しても push が飛ばない**＝ブラウザは張り直さない。ユーザから
+  // 見ると「途中でフッと止まる」。
   //
   // 方針は「接続を維持する」ではなく「**見ている間だけ張り直す**」。
   //   ・タブが visible でない → 何もしない（裏に回れば即座にコスト 0）
   //   ・セッションが is_active でない → 何もしない（止まった相手は起こさない）
   // 上記 2 条件を満たす時だけ再接続を試みる＝コストが出るのは
   // 「人が実際に動いているセッションを見ている間」に限られる。
-  // 実際の再接続頻度は PC 側 idle(30s) 律速で概ね 30s に 1 回。
+  // 実際の再接続頻度は PC 側 idle 律速（30s だった頃は概ね 30s に 1 回。15 分に
+  // 伸ばした後は止まっている画面でも 15 分に 1 回＝全画面の描き直しも 15 分に 1 回）。
   // 張り直し自体は既存経路のまま: /ws ハンドラが st.Wake を撃って PC を
   // 起こし、onopen の resizeFrame が完全 frame の catch-up を兼ねる。
   // 連打は cmReconnectGate の backoff が抑える。

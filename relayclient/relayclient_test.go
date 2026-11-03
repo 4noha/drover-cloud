@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // startRelay は cm コピーの relay server を実 HTTP サーバで起動し
@@ -247,5 +249,86 @@ func TestSourceReconnectTakeover(t *testing.T) {
 	buf := make([]byte, 8)
 	if _, err := src1.Read(buf); err == nil {
 		t.Fatal("旧 source がまだ生きている（takeover close されていない）")
+	}
+}
+
+// TestDialConnPingThroughRealRelay — Dial が返す conn は WS ping で生存確認できる:
+// 実 relay 越しに source/viewer を張り、双方が読んでいる間は Ping が pong で返る。
+// Ping の seam（Pinger）は net.Conn からの型アサートで取れること（webterm／attach の
+// 呼び手はこの形で使う）。
+func TestDialConnPingThroughRealRelay(t *testing.T) {
+	base := startRelay(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	src, err := Dial(ctx, base, "w1:p1", "source")
+	if err != nil {
+		t.Fatalf("Dial source: %v", err)
+	}
+	defer src.Close()
+	vw, err := DialViewerFrom(ctx, base, "w1:p1", "")
+	if err != nil {
+		t.Fatalf("DialViewerFrom: %v", err)
+	}
+	defer vw.Close()
+	// 読み手（pong は読み手が受ける＝本番の readConn/pumpFrames に相当）。
+	for _, c := range []net.Conn{src, vw} {
+		go func(c net.Conn) {
+			buf := make([]byte, 1024)
+			for {
+				if _, err := c.Read(buf); err != nil {
+					return
+				}
+			}
+		}(c)
+	}
+	for name, c := range map[string]net.Conn{"source": src, "viewer": vw} {
+		p, ok := c.(Pinger)
+		if !ok {
+			t.Fatalf("%s: Dial の conn が Pinger でない（%T）", name, c)
+		}
+		pctx, pcancel := context.WithTimeout(ctx, 3*time.Second)
+		err := p.Ping(pctx)
+		pcancel()
+		if err != nil {
+			t.Fatalf("%s: 生きている relay への Ping が失敗: %v", name, err)
+		}
+	}
+}
+
+// TestDialConnPingFailsWhenPeerNotReading — 相手が WS を読んでいなければ pong は
+// 返らず、Ping は ctx の期限で失敗する（黙って死んだ接続・読まない相手の検出）。
+// 相手は Accept 後に一切読まない実 WebSocket サーバ。
+func TestDialConnPingFailsWhenPeerNotReading(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close(websocket.StatusNormalClosure, "")
+		<-r.Context().Done() // 読まない＝pong を返さない
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), "w1:p1", "viewer")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			if _, err := c.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	pctx, pcancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer pcancel()
+	start := time.Now()
+	if err := c.(Pinger).Ping(pctx); err == nil {
+		t.Fatalf("読まない相手への Ping が成功した（pong が無いのに生存と誤認する）")
+	} else if time.Since(start) < time.Second {
+		t.Fatalf("Ping が期限より早く失敗した（%v）: %v", time.Since(start), err)
 	}
 }

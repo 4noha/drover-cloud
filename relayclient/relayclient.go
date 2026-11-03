@@ -49,7 +49,32 @@ func Dial(ctx context.Context, baseURL, sid, role string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return websocket.NetConn(ctx, c, websocket.MessageBinary), nil
+	return &Conn{Conn: websocket.NetConn(ctx, c, websocket.MessageBinary), ws: c}, nil
+}
+
+// Conn は relay へのデータ線（net.Conn）に WebSocket の Ping を足したもの。
+//
+// TCP が黙って死んだ接続（スリープ復帰・NAT テーブル消失・relay VM の再起動）は
+// ESTABLISHED のまま read/write からは区別できない。無通信自切断を 30 秒から
+// 15 分へ伸ばした（2026-11-03・relay が VM に移り常時接続の課金が無くなった）
+// ことで「死んだ接続を 15 分抱える」余地ができたため、生きているかを
+// ping/pong で確かめる手段を持つ。相手（relay の serve／viewer の読み手）が
+// 読んでいれば pong は自動で返る（coder/websocket は読み手が制御フレームへ応答する）。
+type Conn struct {
+	net.Conn
+	ws *websocket.Conn
+}
+
+// Ping は ping を送って pong を ctx の期限まで待つ。呼び手は別 goroutine で
+// この conn を読んでいること（pong は読み手が受ける）。読み手が居ない相手には
+// pong が返らず期限で失敗する＝「相手が読んでいない」もここで検出できる。
+func (c *Conn) Ping(ctx context.Context) error { return c.ws.Ping(ctx) }
+
+// Pinger は Ping できる conn（Dial/DialViewerFrom が返す *Conn）。呼び手は
+// net.Conn からこれへ型アサートして使う（Ping できない conn は「不明」＝
+// 生きている扱いにする側に倒す）。
+type Pinger interface {
+	Ping(ctx context.Context) error
 }
 
 // DialSource は source 役の Dial（webterm 配線の dialRelay 委譲先）。
@@ -71,7 +96,7 @@ func DialViewerFrom(ctx context.Context, baseURL, sid, sourcePC string) (net.Con
 	if err != nil {
 		return nil, err
 	}
-	return websocket.NetConn(ctx, c, websocket.MessageBinary), nil
+	return &Conn{Conn: websocket.NetConn(ctx, c, websocket.MessageBinary), ws: c}, nil
 }
 
 // BridgeSourceIdle は relay へ source として dial し、local と双方向ポンプ
