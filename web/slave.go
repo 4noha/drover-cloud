@@ -404,5 +404,7 @@ func (s *Server) slaveRevoked(w http.ResponseWriter, r *http.Request, pc string)
 	ctx := r.Context()
 	rv := s.st.IsRevoked(ctx, pc) || s.st.SlaveRevoked(ctx, pc)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"revoked": rv})
+	// ws_url: WS 中継の接続先（settings/relay・空なら従来どおり slave 自身の設定）。slave は
+	// Firestore を直接読めないので、周期的に叩くこの応答で切替を届ける（state.SetRelayURL）。
+	_ = json.NewEncoder(w).Encode(map[string]any{"revoked": rv, "ws_url": s.relayUpstream()})
 }

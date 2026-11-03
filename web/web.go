@@ -14,8 +14,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/4noha/drover-cloud/relayclient"
+	"github.com/coder/websocket"
+	"io"
 	"io/fs"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -670,6 +675,57 @@ func (s *Server) wsViewer(w http.ResponseWriter, r *http.Request) {
 		key = slaveSessionKey(pc, sid)
 	}
 	cancel()
-	// 既存 relay の viewer として中継（relay/protocol 無改変）
+	// 上流 relay（VM・state.SetRelayURL / RELAY_UPSTREAM_URL）があれば、そこへ viewer として
+	// 繋いで中継する。無ければ従来どおり自分の relay で中継（relay/protocol 無改変）。
+	if up := s.relayUpstream(); up != "" {
+		s.proxyViewer(w, r, up, sid, pc)
+		return
+	}
 	s.rl.Accept(w, r, key, "viewer")
+}
+
+// relayUpstream は WS 中継の上流（空なら自分の relay で中継＝従来）。
+// RELAY_UPSTREAM_URL（env）が優先、無ければ Firestore settings/relay（各 PC の agent と
+// 同じ切替点＝1 か所で全体が切り替わる）。読めなければ従来どおり（ログだけ残す）。
+func (s *Server) relayUpstream() string {
+	if v := os.Getenv("RELAY_UPSTREAM_URL"); v != "" {
+		return v
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	u, err := s.st.RelayURL(ctx)
+	if err != nil {
+		log.Printf("ws: settings/relay を読めない（自分の relay で中継）: %v", err)
+		return ""
+	}
+	return u
+}
+
+// proxyViewer は認証済ブラウザの WS を上流 relay の viewer 接続へ繋ぐ（両方向 pump）。
+// 上流の Grant 検証のため attach と同じく viewer グラントを書いてから dial する。
+// 上流が slave PC の source と対にするのは spc（source PC）＝DialViewerFrom の契約。
+func (s *Server) proxyViewer(w http.ResponseWriter, r *http.Request, upstream, sid, pc string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gctx, gcancel := context.WithTimeout(ctx, 10*time.Second)
+	if err := s.st.PutRelayGrant(gctx, sid, "viewer", 2*time.Minute); err != nil {
+		log.Printf("ws: 上流用 viewer グラント書込失敗（続行）: %v", err)
+	}
+	gcancel()
+	up, err := relayclient.DialViewerFrom(ctx, upstream, sid, pc)
+	if err != nil {
+		http.Error(w, "上流 relay へ接続できない: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer up.Close()
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover})
+	if err != nil {
+		return
+	}
+	bc := websocket.NetConn(ctx, c, websocket.MessageBinary)
+	defer bc.Close()
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(up, bc); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(bc, up); done <- struct{}{} }()
+	<-done // どちらかが切れたら両方畳む（従来の relay と同じ semantics）
 }

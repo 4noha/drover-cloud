@@ -34,27 +34,35 @@ func handler() http.Handler {
 	key := os.Getenv("WEB_SIGNING_KEY")
 	clientID := os.Getenv("GOOGLE_OAUTH_CLIENT_ID")
 	allowed := os.Getenv("ALLOWED_EMAILS")
+	// RELAY_ONLY=1: WS 中継（/session）だけを、Cloud Run と同じ認可（Firestore グラント・
+	// slave 認可・pc 名前空間キー）で立てる。Web/MCP/眼鏡は載せない＝VM（state.SetRelayURL で
+	// 各 PC と Cloud Run の Web がここへ繋ぐ）用。GCP_PROJECT は必須。
+	if os.Getenv("RELAY_ONLY") == "1" {
+		if proj == "" {
+			log.Fatalf("RELAY_ONLY=1 には GCP_PROJECT が要る")
+		}
+		st, err := state.New(context.Background(), proj, "relay-vm")
+		if err != nil {
+			log.Fatalf("relay-only: Firestore 接続失敗: %v", err)
+		}
+		wireRelayAuth(rl, st, enrollSAFromEnv())
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = io.WriteString(w, "ok relay-only\n")
+		})
+		log.Printf("relay-only 有効（project=%s・slave 認可=%v）", proj, enrollSAFromEnv() != "")
+		return mux
+	}
 	if proj != "" && key != "" && clientID != "" && allowed != "" {
 		st, err := state.New(context.Background(), proj, "relay")
 		if err != nil {
 			log.Printf("web 無効（Firestore 接続失敗）: %v", err)
 		} else {
-			// 公開 /session を Firestore グラントで認可（即 enforce）。
-			rl.Grant = st.CheckRelayGrant
-			enrollSA := os.Getenv("ENROLL_SA_JSON")
-			if enrollSA == "" {
-				// JSON は --set-env-vars を壊すため b64 で渡せる
-				if b, e := base64.StdEncoding.DecodeString(
-					os.Getenv("ENROLL_SA_JSON_B64")); e == nil {
-					enrollSA = string(b)
-				}
-			}
-			// slave（共用 PC）認可 seam。enrollSA=="" なら常に handled=false
-			// ＝slave 機能 off で master path 無改変（NewSlaveGate 内で guard）。
-			rl.SlaveGate = web.NewSlaveGate(enrollSA, st)
-			// 注入 viewer を slave source と同じ pc 名前空間でペアさせる
-			// （spc==slave PC の時のみ・master path は byte-identical）。
-			rl.KeyFor = web.NewViewerKey(st)
+			enrollSA := enrollSAFromEnv()
+			wireRelayAuth(rl, st, enrollSA)
 			ws := web.New(rl, st, webauth.NewSigner(key),
 				clientID, allowed, nil, proj, enrollSA)
 			// Firestore 更新 push（任意）: Firebase Web config（公開
@@ -248,4 +256,26 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("relay 終了: %v", err)
 	}
+}
+
+// enrollSAFromEnv は ENROLL_SA_JSON（素の JSON）か ENROLL_SA_JSON_B64（--set-env-vars を
+// 壊さない b64）から slave 認可用の SA JSON を取り出す。無ければ ""（slave 機能 off）。
+func enrollSAFromEnv() string {
+	if v := os.Getenv("ENROLL_SA_JSON"); v != "" {
+		return v
+	}
+	if b, e := base64.StdEncoding.DecodeString(os.Getenv("ENROLL_SA_JSON_B64")); e == nil {
+		return string(b)
+	}
+	return ""
+}
+
+// wireRelayAuth は公開 /session の認可を relay に配線する（Cloud Run と relay-only で同一）:
+//   - Grant: Firestore グラント（即 enforce）
+//   - SlaveGate: slave（共用 PC）認可 seam。enrollSA=="" なら常に handled=false＝slave 機能 off
+//   - KeyFor: 注入 viewer を slave source と同じ pc 名前空間でペアさせる（spc==slave PC の時のみ）
+func wireRelayAuth(rl *relay.Server, st *state.Client, enrollSA string) {
+	rl.Grant = st.CheckRelayGrant
+	rl.SlaveGate = web.NewSlaveGate(enrollSA, st)
+	rl.KeyFor = web.NewViewerKey(st)
 }
