@@ -12,22 +12,43 @@ package state
 import (
 	"context"
 	"time"
+
+	"cloud.google.com/go/firestore"
 )
 
 const relaySettingsDoc = "relay"
 
-// SetRelayURL は WS 中継の接続先（wss://…）を書く。空で解除。
+// SetRelayURL は WS 中継の接続先（wss://…）を書く。空で解除。他のフィールド（http_url）は保つ。
 func (c *Client) SetRelayURL(ctx context.Context, url string) error {
+	return c.setRelayField(ctx, "url", url)
+}
+
+// SetRelayHTTPURL は slave の HTTP API（/slave/*）の接続先（https://…）を書く。空で解除。
+// slave は /slave/revoked の応答 http_url で受け取り、以後の API 呼出をそこへ向ける。
+func (c *Client) SetRelayHTTPURL(ctx context.Context, url string) error {
+	return c.setRelayField(ctx, "http_url", url)
+}
+
+func (c *Client) setRelayField(ctx context.Context, field, value string) error {
 	_, err := c.fs.Collection("settings").Doc(relaySettingsDoc).Set(ctx, map[string]any{
-		"url":        url,
+		field:        value,
 		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"updated_by": c.pcID,
-	})
+	}, firestore.MergeAll)
 	return err
 }
 
-// RelayURL は設定された接続先を返す。未設定／doc 無しは ""（エラーではない）。
+// RelayHTTPURL は slave の HTTP API の接続先。未設定／doc 無しは ""。
+func (c *Client) RelayHTTPURL(ctx context.Context) (string, error) {
+	return c.relayField(ctx, "http_url")
+}
+
+// RelayURL は設定された WS 中継の接続先を返す。未設定／doc 無しは ""（エラーではない）。
 func (c *Client) RelayURL(ctx context.Context) (string, error) {
+	return c.relayField(ctx, "url")
+}
+
+func (c *Client) relayField(ctx context.Context, field string) (string, error) {
 	snap, err := c.fs.Collection("settings").Doc(relaySettingsDoc).Get(ctx)
 	if err != nil {
 		if snap != nil && !snap.Exists() {
@@ -38,8 +59,8 @@ func (c *Client) RelayURL(ctx context.Context) (string, error) {
 	if !snap.Exists() {
 		return "", nil
 	}
-	url, _ := snap.Data()["url"].(string)
-	return url, nil
+	v, _ := snap.Data()[field].(string)
+	return v, nil
 }
 
 // WatchRelayURL は settings/relay を real-time 監視し、初回と変更ごとに cb(url) を呼ぶ

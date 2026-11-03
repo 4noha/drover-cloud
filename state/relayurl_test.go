@@ -52,3 +52,29 @@ func TestRelayURLSetGetWatch(t *testing.T) {
 		t.Fatal("解除の通知が来ない")
 	}
 }
+
+// http_url（slave の API 先）は url（WS）と独立に持ち、片方を書いても他方は保たれる。
+func TestRelayHTTPURLIndependentOfWSURL(t *testing.T) {
+	c := newClient(t, "relayurl-http-test-herdr")
+	ctx := context.Background()
+	t.Cleanup(func() { _ = c.SetRelayURL(ctx, ""); _ = c.SetRelayHTTPURL(ctx, "") })
+	if err := c.SetRelayURL(ctx, "wss://relay.example.org"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetRelayHTTPURL(ctx, "https://relay.example.org"); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ := c.RelayURL(ctx)
+	hu, _ := c.RelayHTTPURL(ctx)
+	if ws != "wss://relay.example.org" || hu != "https://relay.example.org" {
+		t.Fatalf("両方保たれるはず: ws=%q http=%q", ws, hu)
+	}
+	if err := c.SetRelayHTTPURL(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ = c.RelayURL(ctx)
+	hu, _ = c.RelayHTTPURL(ctx)
+	if ws != "wss://relay.example.org" || hu != "" {
+		t.Fatalf("http だけ解除のはず: ws=%q http=%q", ws, hu)
+	}
+}

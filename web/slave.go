@@ -10,15 +10,33 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/4noha/drover-cloud/state"
 )
 
-// slaveWakeHold は /slave/wake の long-poll 保持時間（テストで短縮可能）。
-var slaveWakeHold = 25 * time.Second
+// slaveWakeHold は /slave/wake・/slave/commands の long-poll 保持時間（テストで短縮可能）。
+// env SLAVE_POLL_HOLD（Go duration）で変えられる。Cloud Run では保持中も「処理中のリクエスト」
+// として CPU が課金されるため、短くして slave 側の間隔ポーリング（relaystate の short-poll）に
+// 寄せる選択肢を持つ（VM では既定の 25s でよい）。
+var slaveWakeHold = slavePollHoldFromEnv(25 * time.Second)
+
+func slavePollHoldFromEnv(def time.Duration) time.Duration {
+	v := os.Getenv("SLAVE_POLL_HOLD")
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		log.Printf("SLAVE_POLL_HOLD が不正（既定 %s を使う）: %q", def, v)
+		return def
+	}
+	return d
+}
 
 // injSuffix はリモート pane 注入の派生 sid 接尾辞（`<sid>#inj`）。slave は
 // この接尾辞を剥がした base sid の所有権で #inj を配信できる（自 session を
@@ -419,5 +437,19 @@ func (s *Server) slaveRevoked(w http.ResponseWriter, r *http.Request, pc string)
 	w.Header().Set("Content-Type", "application/json")
 	// ws_url: WS 中継の接続先（settings/relay・空なら従来どおり slave 自身の設定）。slave は
 	// Firestore を直接読めないので、周期的に叩くこの応答で切替を届ける（state.SetRelayURL）。
-	_ = json.NewEncoder(w).Encode(map[string]any{"revoked": rv, "ws_url": s.relayUpstream()})
+	_ = json.NewEncoder(w).Encode(map[string]any{"revoked": rv, "ws_url": s.relayUpstream(), "http_url": s.slaveHTTPUpstream()})
+}
+
+// slaveHTTPUpstream は slave の HTTP API（/slave/*）の接続先（settings/relay の http_url・空なら
+// 従来どおり slave 自身の設定＝Cloud Run）。VM に /slave/* を載せた時に、ロングポールごと
+// Cloud Run から外すために使う。
+func (s *Server) slaveHTTPUpstream() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	u, err := s.st.RelayHTTPURL(ctx)
+	if err != nil {
+		log.Printf("slave: settings/relay の http_url を読めない（空扱い）: %v", err)
+		return ""
+	}
+	return u
 }

@@ -93,6 +93,10 @@ func TestRelayOnlyMode(t *testing.T) {
 	if r, _ := http.Get(ts.URL + "/api/sessions"); r == nil || r.StatusCode != 404 {
 		t.Fatalf("Web は載らないはず: %v", r)
 	}
+	// slave の API は ENROLL_SA が無いこのテストでは載らない（404）。
+	if r, _ := http.Get(ts.URL + "/slave/revoked"); r == nil || r.StatusCode != 404 {
+		t.Fatalf("ENROLL_SA 無しなら /slave/* は載らないはず: %v", r)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	base := "ws" + strings.TrimPrefix(ts.URL, "http")
@@ -126,5 +130,33 @@ func TestRelayOnlyMode(t *testing.T) {
 	n, err := v.Read(buf)
 	if err != nil || string(buf[:n]) != "hello-relay-only" {
 		t.Fatalf("中継: %q %v", buf[:n], err)
+	}
+}
+
+// RELAY_ONLY=1 ＋ ENROLL_SA_JSON: slave の API（/slave/*）が載る（bearer 無しは 401・404 ではない）。
+func TestRelayOnlyMountsSlaveAPI(t *testing.T) {
+	if !relayEmuUp {
+		t.Skip("Firestore emulator 不在")
+	}
+	t.Setenv("RELAY_ONLY", "1")
+	t.Setenv("GCP_PROJECT", "demo-relay-only")
+	t.Setenv("ENROLL_SA_JSON", `{"type":"service_account","project_id":"demo","client_email":"x@demo.iam","private_key_id":"k"}`)
+	ts := httptest.NewServer(handler())
+	defer ts.Close()
+	for _, p := range []string{"/slave/revoked", "/slave/wake", "/slave/commands", "/slave/grant"} {
+		r, err := http.Get(ts.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode == 404 {
+			t.Fatalf("%s が載っていない（404）", p)
+		}
+		if r.StatusCode != 401 && r.StatusCode != 403 && r.StatusCode != 405 {
+			t.Fatalf("%s: bearer 無しは 401/403 のはず: %d", p, r.StatusCode)
+		}
+	}
+	if r, _ := http.Get(ts.URL + "/api/sessions"); r == nil || r.StatusCode != 404 {
+		t.Fatalf("Web は載らないはず: %v", r)
 	}
 }

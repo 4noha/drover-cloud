@@ -6,7 +6,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"log"
 	"net/http"
@@ -45,7 +47,20 @@ func handler() http.Handler {
 		if err != nil {
 			log.Fatalf("relay-only: Firestore 接続失敗: %v", err)
 		}
-		wireRelayAuth(rl, st, enrollSAFromEnv())
+		enrollSA := enrollSAFromEnv()
+		wireRelayAuth(rl, st, enrollSA)
+		// slave（共用 PC）の HTTP API（/slave/*: token/register/push/sessions/wake/grant/revoked/commands）
+		// も載せる＝ロングポールごと Cloud Run から外せる（settings/relay の http_url で slave が
+		// ここへ向く）。Web UI の経路は /slave/ 配下しか通さないので cookie 認証系は使われない
+		// （署名鍵はこのプロセス限りの乱数）。
+		if enrollSA != "" {
+			key := make([]byte, 32)
+			if _, err := rand.Read(key); err != nil {
+				log.Fatalf("relay-only: 乱数生成失敗: %v", err)
+			}
+			ws := web.New(rl, st, webauth.NewSigner(hex.EncodeToString(key)), "", "", nil, proj, enrollSA)
+			mux.Handle("/slave/", ws.Handler())
+		}
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/" {
 				http.NotFound(w, r)
@@ -53,7 +68,7 @@ func handler() http.Handler {
 			}
 			_, _ = io.WriteString(w, "ok relay-only\n")
 		})
-		log.Printf("relay-only 有効（project=%s・slave 認可=%v）", proj, enrollSAFromEnv() != "")
+		log.Printf("relay-only 有効（project=%s・slave 認可/API=%v）", proj, enrollSA != "")
 		return mux
 	}
 	if proj != "" && key != "" && clientID != "" && allowed != "" {
