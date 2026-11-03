@@ -131,11 +131,14 @@ gcloud run services update <SERVICE> --project=<PROJECT_ID> --region=<REGION> \
 > Artifact Registry `cm`・鍵パス `~/.claude-master/web_signing_key`）は cm 由来。
 > 動作に問題はないが、別名で運用したければ引数・スクリプトで変更してよい。
 
-## relay の VM 化（WS 中継だけを e2-micro へ・2026-11-03）
+## （任意）relay の VM 化（WS 中継だけを e2-micro へ・2026-11-03）
 
+**上の Cloud Run だけの構成が基本で、それだけで全機能が動く。** この節は追加構成。
 Cloud Run は WebSocket を「処理中のリクエスト」として数え、繋いでいる間ずっと 1 vCPU を
-課金する（使用率 3% でも月 ¥7〜8k）。WS の中継 `/session` だけを VM に置き、Web UI・OAuth・
-MCP・`/slave/*` は Cloud Run に残す（Web の `/ws` は Cloud Run が VM へ中継する）。
+課金する（使用率 3% でも月 ¥7〜8k）ので、それを下げたい場合に WS の中継 `/session` だけを
+VM に置く。Web UI・OAuth・MCP・`/slave/*` は Cloud Run に残す（Web の `/ws` は Cloud Run が
+VM へ中継する）。VM を使わない／止める時は `settings/relay` の `url` を空にすれば Cloud Run
+だけの構成に戻る。
 
 - VM: `relay`（既定 asia-northeast1-b・e2-micro・Debian 12）、固定 IP `relay-ip`、
   SA `relay-vm`（roles/datastore.user・鍵ファイル無し）、fw `relay-allow-web`（80/443）。
