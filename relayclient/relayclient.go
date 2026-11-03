@@ -155,7 +155,7 @@ func idlePump(a, b io.ReadWriteCloser, idle time.Duration) {
 // （各 PC の agent）は CPU を使って圧縮しない。relay が対応しなければ無圧縮に落ちる。
 func viewerCompression(role string) websocket.CompressionMode {
 	if role == "viewer" {
-		return websocket.CompressionNoContextTakeover
+		return websocket.CompressionContextTakeover // 小さな差分フレームの連続に効く（relay.NewServer 参照）
 	}
 	return websocket.CompressionDisabled
 }

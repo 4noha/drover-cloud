@@ -32,8 +32,13 @@ type Server struct {
 	// Firestore 無し構成）。本番は state.CheckRelayGrant を注入。
 	Grant func(ctx context.Context, sid, role string) bool
 
-	// Compression は Accept する WS の permessage-deflate モード（NewServer 既定 NoContextTakeover）。
+	// Compression は Accept する WS の permessage-deflate モード（NewServer 既定 ContextTakeover）。
 	Compression websocket.CompressionMode
+	// CompressionThreshold は圧縮する最小メッセージ長（0＝ライブラリ既定: ContextTakeover で
+	// 128B・NoContext で 512B）。herdr の差分フレーム（100B 級）はどの設定でも縮まない
+	// （2026-11-03 実測: 閾値 1 にしても 105%＝むしろ増える）ので既定のままにする。
+	// 小さなフレームを縮めるなら source 側でまとめて大きいメッセージにするしかない。
+	CompressionThreshold int
 
 	// SlaveGate は slave（共用 PC）認可の seam（既定 nil＝今日の挙動）。
 	// /session で **Authorization: Bearer ヘッダが在る時のみ** 参照される。
@@ -65,10 +70,16 @@ type sess struct {
 // NewServer は圧縮有効（permessage-deflate）の relay を返す。端末の画面描画は
 // 反復の多いテキストで、Cloud Run の外向き転送料（月 ¥5 万規模）の大半が
 // relay→viewer のこの流れ。相手が対応しない/要求しなければ自動で無圧縮に落ちる
-// （古いクライアント・Safari は従来どおり）。NoContextTakeover＝接続ごとの
-// 常駐メモリ無し（メッセージごとに pool の writer を借りる）。
+// （古いクライアント・Safari は従来どおり）。
+//
+// ContextTakeover＝接続の間 32KB の窓を持ち越す。実コマンド出力を 1000B 単位で流す
+// 実測（compress_test.go）で NoContext 47% → ContextTakeover 37%。100B 級の差分フレーム
+// （herdr の observe の大半の枚数。バイト数では少数）はどちらでも縮まない。
+// 代償は接続ごとに約 1.2MB の writer（v1.8 の実装）。接続数は「見ている ↗窓」ぶんだけ
+// （herdr-drover v0.5.48 の表示判定）になったので許容する。相手が持ち越し非対応なら
+// ライブラリが NoContextTakeover に落とす。
 func NewServer() *Server {
-	return &Server{sessions: map[string]*sess{}, Compression: websocket.CompressionNoContextTakeover}
+	return &Server{sessions: map[string]*sess{}, Compression: websocket.CompressionContextTakeover}
 }
 
 // ServeHTTP は GET /session?sid=<id>&role=source|viewer を WSS 化。
@@ -112,7 +123,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Accept は WS をアップグレードして sid/role でペアリング中継する
 // （Web の認証済 /ws viewer からも再利用＝relay 本体は無改変）。
 func (s *Server) Accept(w http.ResponseWriter, r *http.Request, sid, role string) {
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: s.Compression})
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: s.Compression, CompressionThreshold: s.CompressionThreshold})
 	if err != nil {
 		return
 	}

@@ -95,6 +95,92 @@ func relayToViewerWire(t *testing.T, comp websocket.CompressionMode, viewerOffer
 	return wrote.Load() // relay が TCP へ書いた全量（viewer 宛が主）
 }
 
+// relayToViewerWireChunks は data を chunk バイトずつの WS メッセージで流す（herdr の observe が
+// 出す 100 バイト級の差分フレームの連続を、実コマンド出力で模す）。
+func relayToViewerWireChunks(t *testing.T, comp, viewerOffers websocket.CompressionMode, threshold int, data []byte, chunk int) int64 {
+	t.Helper()
+	srv := NewServer()
+	srv.Compression = comp
+	srv.CompressionThreshold = threshold
+	var wrote atomic.Int64
+	ts := httptest.NewUnstartedServer(srv)
+	ts.Listener = countListener{Listener: ts.Listener, wrote: &wrote}
+	ts.Start()
+	defer ts.Close()
+	base := "ws" + strings.TrimPrefix(ts.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	v, _, err := websocket.Dial(ctx, base+"/session?sid=c2&role=viewer", &websocket.DialOptions{CompressionMode: viewerOffers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vc := websocket.NetConn(ctx, v, websocket.MessageBinary)
+	s, _, err := websocket.Dial(ctx, base+"/session?sid=c2&role=source", &websocket.DialOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := websocket.NetConn(ctx, s, websocket.MessageBinary)
+	go func() {
+		for i := 0; i < len(data); i += chunk {
+			j := i + chunk
+			if j > len(data) {
+				j = len(data)
+			}
+			if _, err := sc.Write(data[i:j]); err != nil {
+				return
+			}
+		}
+	}()
+	got := make([]byte, len(data))
+	if _, err := io.ReadFull(vc, got); err != nil {
+		t.Fatalf("viewer 読取: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("圧縮を通した内容がバイト一致しない")
+	}
+	return wrote.Load()
+}
+
+// 小さなメッセージの連続で、圧縮設定ごとの wire を実測して固定する（2026-11-03）。
+// 分かっていること（coder/websocket v1.8.14）:
+//   - ライブラリ既定の閾値（NoContext 512B・Context 128B）では 100B のメッセージは**圧縮されない**。
+//   - 閾値 1 にしても 100B 単位では 95% 程度にしか縮まない。ContextTakeover でも前メッセージの
+//     窓は実質使われず NoContext と同じ（測定値が一致）。小さな差分フレームを縮めるには、
+//     source 側でフレームをまとめて大きいメッセージにするしかない（herdr-drover 側の課題）。
+//   - 1000B 単位なら 20〜24% に縮み、ContextTakeover の方が少し小さい。
+func TestSmallMessageCompressionFacts(t *testing.T) {
+	data := realTerminalBytes(t)
+	if len(data) > 1<<20 {
+		data = data[:1<<20]
+	}
+	def := NewServer()
+	if def.Compression != websocket.CompressionContextTakeover || def.CompressionThreshold != 0 {
+		t.Fatalf("relay の既定は ContextTakeover・閾値はライブラリ既定のはず: %v %d", def.Compression, def.CompressionThreshold)
+	}
+	off100 := relayToViewerWireChunks(t, websocket.CompressionDisabled, websocket.CompressionDisabled, 0, data, 100)
+	old100 := relayToViewerWireChunks(t, websocket.CompressionNoContextTakeover, websocket.CompressionNoContextTakeover, 0, data, 100)
+	new100 := relayToViewerWireChunks(t, websocket.CompressionContextTakeover, websocket.CompressionContextTakeover, 0, data, 100)
+	thr1 := relayToViewerWireChunks(t, websocket.CompressionContextTakeover, websocket.CompressionContextTakeover, 1, data, 100)
+	off1k := relayToViewerWireChunks(t, websocket.CompressionDisabled, websocket.CompressionDisabled, 0, data, 1000)
+	old1k := relayToViewerWireChunks(t, websocket.CompressionNoContextTakeover, websocket.CompressionNoContextTakeover, 0, data, 1000)
+	new1k := relayToViewerWireChunks(t, websocket.CompressionContextTakeover, websocket.CompressionContextTakeover, 0, data, 1000)
+	t.Logf("100B 単位: 無圧縮 %d / 旧設定 %d (%.0f%%) / 新設定 %d (%.0f%%) / 閾値 1 %d (%.0f%%)", off100, old100, 100*float64(old100)/float64(off100), new100, 100*float64(new100)/float64(off100), thr1, 100*float64(thr1)/float64(off100))
+	t.Logf("1000B 単位: 無圧縮 %d / 旧設定 %d (%.0f%%) / 新設定 %d (%.0f%%)", off1k, old1k, 100*float64(old1k)/float64(off1k), new1k, 100*float64(new1k)/float64(off1k))
+	if old100 < off100 {
+		t.Fatalf("前提が崩れている: 旧設定で 100B メッセージが圧縮されている old=%d off=%d", old100, off100)
+	}
+	// 100B 単位: 新設定でも旧設定と同じく圧縮されない（閾値未満＝±1%）。閾値 1 は逆に増える＝採らない。
+	if d := new100 - old100; d > old100/100 || d < -old100/100 {
+		t.Fatalf("100B 単位は旧設定と同等のはず: new=%d old=%d", new100, old100)
+	}
+	if thr1 <= new100 {
+		t.Fatalf("前提が崩れている: 閾値 1 が 100B 単位で小さくなっている（なら既定を変えるべき）: thr1=%d new=%d", thr1, new100)
+	}
+	if new1k >= old1k || new1k*2 > off1k {
+		t.Fatalf("新設定は 1000B 単位で旧設定より小さく、無圧縮の半分以下のはず: new=%d old=%d off=%d", new1k, old1k, off1k)
+	}
+}
+
 func TestCompressionShrinksRelayToViewerWire(t *testing.T) {
 	data := realTerminalBytes(t)
 	off := relayToViewerWire(t, websocket.CompressionDisabled, websocket.CompressionDisabled, data)
