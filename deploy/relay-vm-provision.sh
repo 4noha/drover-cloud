@@ -1,12 +1,16 @@
 #!/bin/sh
-# relay VM へ relay バイナリ・env・systemd・Caddyfile を配置して起動する（この Mac から実行）。
-# 前提: gcp-relay-vm-setup.sh 済み・Cloudflare に relay.4noha.org の A レコード（DNS only）。
+# relay VM へ relay バイナリ・env・systemd・Caddyfile を配置して起動する（手元の PC から実行。更新も同じ）。
+#   PROJECT=<gcp project> RELAY_HOST=<relay のホスト名> [ZONE=asia-northeast1-b] [REGION=asia-northeast1] \
+#   [CLOUD_RUN_SERVICE=claude-master-relay] sh deploy/relay-vm-provision.sh
+# 前提: relay-vm-setup.sh 済み・DNS に A レコード（Cloudflare なら DNS only）。
 set -eu
-P=claude-master-4noha; Z=asia-northeast1-b; HOST=relay.4noha.org
+P=${PROJECT:?PROJECT（GCP プロジェクト ID）を指定}
+HOST=${RELAY_HOST:?RELAY_HOST（relay のホスト名）を指定}
+Z=${ZONE:-asia-northeast1-b}; R=${REGION:-asia-northeast1}; SVC=${CLOUD_RUN_SERVICE:-claude-master-relay}
 BIN=${BIN:-$(cd "$(dirname "$0")/.." && pwd)/dist/relay_linux_amd64}
 [ -f "$BIN" ] || { echo "relay バイナリが無い: $BIN"; exit 1; }
 # slave 認可用の SA JSON（b64）は Cloud Run の env から取り出して VM の env ファイルへ（画面には出さない）
-SA_B64=$(gcloud run services describe claude-master-relay --project=$P --region=asia-northeast1 --format=json | python3 -c 'import json,sys; env=json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0]["env"]; print(next(e["value"] for e in env if e["name"]=="ENROLL_SA_JSON_B64"))')
+SA_B64=$(gcloud run services describe "$SVC" --project=$P --region=$R --format=json | python3 -c 'import json,sys; env=json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0]["env"]; print(next(e["value"] for e in env if e["name"]=="ENROLL_SA_JSON_B64"))')
 [ -n "$SA_B64" ] || { echo "ENROLL_SA_JSON_B64 を取れない"; exit 1; }
 echo "== binary scp"; gcloud compute scp "$BIN" relay:/tmp/drover-relay --project=$P --zone=$Z --quiet
 echo "== env/systemd/caddy"

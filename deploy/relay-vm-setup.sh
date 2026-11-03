@@ -1,7 +1,10 @@
 #!/bin/sh
-# drover relay VM（東京 e2-micro）の作成。冪等（既にあるものは skip）。
+# drover relay VM（e2-micro）の作成。冪等（既にあるものは skip）。
+#   PROJECT=<gcp project> [REGION=asia-northeast1] [ZONE=asia-northeast1-b] sh deploy/relay-vm-setup.sh
+# IAM 付与を含むので対話シェルで実行する。
 set -u
-P=claude-master-4noha; R=asia-northeast1; Z=asia-northeast1-b
+P=${PROJECT:?PROJECT（GCP プロジェクト ID）を指定}
+R=${REGION:-asia-northeast1}; Z=${ZONE:-asia-northeast1-b}
 echo "== [1/6] Compute Engine API"; gcloud services enable compute.googleapis.com --project=$P
 echo "== [2/6] サービスアカウント relay-vm（Firestore 読み書き＝grant/wake の検証用。鍵ファイル不要）"
 gcloud iam service-accounts describe relay-vm@$P.iam.gserviceaccount.com --project=$P >/dev/null 2>&1 || gcloud iam service-accounts create relay-vm --project=$P --display-name="drover relay VM"
@@ -22,4 +25,4 @@ EOS
 echo "== [6/6] VM relay（e2-micro・Debian 12・pd-balanced 10GB）"
 gcloud compute instances describe relay --project=$P --zone=$Z >/dev/null 2>&1 || gcloud compute instances create relay --project=$P --zone=$Z --machine-type=e2-micro --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=10GB --boot-disk-type=pd-balanced --address=relay-ip --tags=relay --service-account="relay-vm@$P.iam.gserviceaccount.com" --scopes=cloud-platform --metadata-from-file=startup-script=/tmp/relay-startup.sh
 gcloud compute instances describe relay --project=$P --zone=$Z --format='value(name,status,networkInterfaces[0].accessConfigs[0].natIP)'
-echo "== 完了。Cloudflare に A レコード（DNS only・プロキシ OFF）: relay.<ドメイン> → $IP"
+echo "== 完了。DNS に A レコード（Cloudflare なら DNS only・プロキシ OFF）: <relay のホスト名> → $IP"

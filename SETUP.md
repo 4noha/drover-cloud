@@ -131,30 +131,31 @@ gcloud run services update <SERVICE> --project=<PROJECT_ID> --region=<REGION> \
 > Artifact Registry `cm`・鍵パス `~/.claude-master/web_signing_key`）は cm 由来。
 > 動作に問題はないが、別名で運用したければ引数・スクリプトで変更してよい。
 
-## relay の VM 化（WS 中継だけを東京の e2-micro へ・2026-11-03）
+## relay の VM 化（WS 中継だけを e2-micro へ・2026-11-03）
 
 Cloud Run は WebSocket を「処理中のリクエスト」として数え、繋いでいる間ずっと 1 vCPU を
 課金する（使用率 3% でも月 ¥7〜8k）。WS の中継 `/session` だけを VM に置き、Web UI・OAuth・
 MCP・`/slave/*` は Cloud Run に残す（Web の `/ws` は Cloud Run が VM へ中継する）。
 
-- VM: `relay`（asia-northeast1-b・e2-micro・Debian 12）、固定 IP `relay-ip`＝34.84.101.90、
+- VM: `relay`（既定 asia-northeast1-b・e2-micro・Debian 12）、固定 IP `relay-ip`、
   SA `relay-vm`（roles/datastore.user・鍵ファイル無し）、fw `relay-allow-web`（80/443）。
-- ホスト名: `relay.4noha.org`（Cloudflare・**DNS only**。プロキシ ON だと WS が Cloudflare 経由になり
-  無通信 100 秒で切られる）。TLS は caddy が Let's Encrypt で自動取得・更新。
+- ホスト名: 自分のドメインのサブドメイン（Cloudflare なら **DNS only**。プロキシ ON だと WS が
+  Cloudflare 経由になり無通信 100 秒で切られる）。TLS は caddy が Let's Encrypt で自動取得・更新。
 - VM 上: `/opt/drover/relay`（`cmd/relay` の linux/amd64 ビルド）を systemd `drover-relay` が
   `RELAY_ONLY=1` で起動（env は `/etc/drover/relay.env`・600: GCP_PROJECT / RELAY_ONLY / PORT /
-  ENROLL_SA_JSON_B64＝slave 認可用）。caddy が :443 → 127.0.0.1:8080。
+  ENROLL_SA_JSON_B64＝slave 認可用。値は Cloud Run の env から取り出して直接流す＝ファイルにも画面にも出さない）。
+  caddy が :443 → 127.0.0.1:8080。
 
 ```sh
-sh deploy/relay-vm-setup.sh        # GCP 側の作成（冪等。IAM 付与を含むので対話シェルで実行）
-# Cloudflare に A レコード（DNS only）を追加してから:
+PROJECT=<gcp project> sh deploy/relay-vm-setup.sh      # GCP 側の作成（冪等。IAM 付与を含むので対話シェルで）
+# DNS に A レコード（出力された固定 IP）を追加してから:
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/relay_linux_amd64 ./cmd/relay
-sh deploy/relay-vm-provision.sh    # バイナリ・env・systemd・Caddyfile を配置して起動（更新も同じ）
-curl https://relay.4noha.org/      # → ok relay-only
+PROJECT=<gcp project> RELAY_HOST=<ホスト名> sh deploy/relay-vm-provision.sh   # 配置して起動（更新も同じ）
+curl https://<ホスト名>/                                 # → ok relay-only
 ```
 
 切替（全 PC が herdr-drover v0.5.51 以上であること）:
-Firestore `settings/relay` の `url` に `wss://relay.4noha.org` を書く（`state.SetRelayURL`）。
+Firestore `settings/relay` の `url` に `wss://<ホスト名>` を書く（`state.SetRelayURL`）。
 master の agent は real-time、slave は `/slave/revoked` の応答、↗窓は次の接続、Cloud Run の
 Web `/ws` は次の接続から VM を使う。**戻すのは `url` を空にするだけ**（各自の設定へ戻る）。
 VM が落ちている間は Cloud Run に戻せば従来どおり動く。

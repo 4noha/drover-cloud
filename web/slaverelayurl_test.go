@@ -23,13 +23,13 @@ func TestSlaveRevokedCarriesRelayWSURL(t *testing.T) {
 	if m["revoked"] != false || m["ws_url"] != "" {
 		t.Fatalf("未設定なら ws_url は空: %v", m)
 	}
-	if err := st.SetRelayURL(t.Context(), "wss://relay.4noha.org"); err != nil {
+	if err := st.SetRelayURL(t.Context(), "wss://relay.example.org"); err != nil {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()
 	ws.slaveRevoked(rec, httptest.NewRequest(http.MethodGet, "/slave/revoked", nil), "slave-x-herdr")
 	_ = json.Unmarshal(rec.Body.Bytes(), &m)
-	if m["ws_url"] != "wss://relay.4noha.org" {
+	if m["ws_url"] != "wss://relay.example.org" {
 		t.Fatalf("settings/relay の url が載るはず: %v", m)
 	}
 	t.Cleanup(func() { _ = st.SetRelayURL(t.Context(), "") })
