@@ -125,7 +125,10 @@ gcloud run services update <SERVICE> --project=<PROJECT_ID> --region=<REGION> \
 - **再デプロイ / 機能追加**: コード修正 → `deploy/deploy.sh <PROJECT>` を再実行
   （env は保持される。`WEB_SIGNING_KEY` は不変ファイルから復元）
 - **SA 鍵ローテーション**: `deploy/rotate-sa.sh <PROJECT>`（⚠ 他 PC 再 enroll 要）
-- **near-$0**: min-instances=0。アイドル時は課金ほぼゼロ。同期量に比例
+- **near-$0**: min-instances=0。アイドル時は課金ほぼゼロ。同期量に比例。
+  Firestore の読取も near-$0: 状態 push の差分判定はプロセス内の記憶（`state/pushcache.go`）
+  で行い、無差分の tick では doc を読まない（v0.2.11。以前は tick ごとに全 session doc を
+  Get しており、5 台 65 docs で約 4.7 万読み/時＝月 $13〜16 の実費になっていた）
 
 > 注: `deploy.sh` / `rotate-sa.sh` の既定名（サービス `claude-master-relay`・
 > Artifact Registry `cm`・鍵パス `~/.claude-master/web_signing_key`）は cm 由来。

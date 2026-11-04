@@ -29,47 +29,7 @@ func ValidPCName(pc string) bool { return pcNameRe.MatchString(pc) }
 // 導出した値。slave が別 pc を詐称できないよう pc は relay 側で固定される）。
 // content_hash 据置ゲート・親 doc の MergeAll tail も PushStatus と同一。
 func (c *Client) PushStatusFor(ctx context.Context, pc string, sessions []map[string]any) (changed int, err error) {
-	col := c.fs.Collection("pcs").Doc(pc).Collection("sessions")
-	for _, s := range sessions {
-		id := sessionKey(s)
-		h := contentHash(s)
-		ref := col.Doc(id)
-		ver := int64(1)
-		snap, gerr := ref.Get(ctx)
-		if gerr == nil && snap.Exists() {
-			d := snap.Data()
-			pv, _ := d["version"].(int64)
-			ph, _ := d["content_hash"].(string)
-			if ph == h {
-				// 差分なし＝書かない（near-$0 維持）。
-				continue
-			}
-			ver = pv + 1
-			changed++
-		} else {
-			changed++
-		}
-		doc := map[string]any{}
-		for k, v := range s {
-			doc[k] = v
-		}
-		doc["version"] = ver
-		doc["content_hash"] = h
-		doc["updated_at"] = time.Now().UTC().Format(time.RFC3339)
-		if _, werr := ref.Set(ctx, doc); werr != nil {
-			return changed, werr
-		}
-	}
-	// 変化があった時だけ親 doc を明示書込（端末一覧に出すため。PushStatus と
-	// 同じ MergeAll＝agent_kind 再表明・他フィールド非破壊）。
-	if changed > 0 {
-		_, _ = c.fs.Collection("pcs").Doc(pc).Set(ctx, map[string]any{
-			"id":         pc,
-			"updated_at": time.Now().UTC().Format(time.RFC3339),
-			"agent_kind": "herdr-drover",
-		}, firestore.MergeAll)
-	}
-	return changed, nil
+	return c.pushSessions(ctx, pc, sessions)
 }
 
 // DeleteSessionFor は pcs/{pc}/sessions/{key} を削除（DeleteSession の pc 明示版）。
@@ -77,6 +37,7 @@ func (c *Client) DeleteSessionFor(ctx context.Context, pc, key string) error {
 	if key == "" {
 		return nil
 	}
+	c.push.forget(c.push.key(pc, key))
 	_, err := c.fs.Collection("pcs").Doc(pc).
 		Collection("sessions").Doc(key).Delete(ctx)
 	return err

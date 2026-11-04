@@ -5,6 +5,8 @@
 //   - 状態 upsert: PushStatus が STATUS スキーマを
 //     pcs/{pcId}/sessions/{sid} へ。content_hash 不変なら version 据置
 //     ＝ Cloud Functions / agent の差分判定の土台。
+//     差分判定の材料はプロセス内の記憶（pushcache.go）＝無差分の tick では
+//     Firestore を読みも書きもしない。
 //
 // 画面解釈はしない（保存するのは scanner+VT status のメタのみ＝不変条件）。
 // FIRESTORE_EMULATOR_HOST が立っていれば自動でエミュレータへ繋ぐので、
@@ -26,6 +28,7 @@ import (
 type Client struct {
 	fs   *firestore.Client
 	pcID string
+	push *pushCache // PushStatus の差分判定の記憶（pushcache.go）
 }
 
 // New は projectID/pcID で Firestore クライアントを作る。
@@ -36,7 +39,7 @@ func New(ctx context.Context, projectID, pcID string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{fs: fs, pcID: pcID}, nil
+	return &Client{fs: fs, pcID: pcID, push: newPushCache()}, nil
 }
 
 // NewWithCredentials は **クライアント個別**の SA 鍵ファイルで Firestore
@@ -53,7 +56,7 @@ func NewWithCredentials(ctx context.Context, projectID, pcID, saKeyPath string) 
 	if err != nil {
 		return nil, err
 	}
-	return &Client{fs: fs, pcID: pcID}, nil
+	return &Client{fs: fs, pcID: pcID, push: newPushCache()}, nil
 }
 
 func (c *Client) Close() error { return c.fs.Close() }
@@ -93,61 +96,7 @@ func sessionKey(s map[string]any) string {
 // version を据え置く（＝差分なし。Functions/agent がこれで開閉判断）。
 // 戻り値 changed は今回 version が上がった session 数。
 func (c *Client) PushStatus(ctx context.Context, sessions []map[string]any) (changed int, err error) {
-	col := c.fs.Collection("pcs").Doc(c.pcID).Collection("sessions")
-	for _, s := range sessions {
-		id := sessionKey(s)
-		h := contentHash(s)
-		ref := col.Doc(id)
-		ver := int64(1)
-		snap, gerr := ref.Get(ctx)
-		if gerr == nil && snap.Exists() {
-			d := snap.Data()
-			pv, _ := d["version"].(int64)
-			ph, _ := d["content_hash"].(string)
-			if ph == h {
-				// 差分なし＝Firestore へ書かない（near-$0 維持。毎 tick
-				// Set すると updated_at で常時書込＋無駄 listener wake）。
-				continue
-			}
-			ver = pv + 1
-			changed++
-		} else {
-			changed++
-		}
-		doc := map[string]any{}
-		for k, v := range s {
-			doc[k] = v
-		}
-		doc["version"] = ver
-		doc["content_hash"] = h
-		doc["updated_at"] = time.Now().UTC().Format(time.RFC3339)
-		if _, werr := ref.Set(ctx, doc); werr != nil {
-			return changed, werr
-		}
-	}
-	// pcs/{pc} は subcollection 書込では暗黙の非存在 doc になり
-	// Collection("pcs") 列挙に出ない。端末一覧（account scope）で
-	// 拾えるよう、変化があった時だけ親 doc を明示書込（near-$0 維持）。
-	if changed > 0 {
-		// MergeAll＝id/updated_at/agent_kind のみ更新し RegisterPCVersion が入れた
-		// cm_version 等の他フィールドを消さない（全置換 Set だと agent 版が毎
-		// producer tick で消える実バグになる）。
-		//
-		// agent_kind を毎回 **再表明**するのが重要（敵対的レビューで確認）:
-		// RegisterPCVersion は起動時 1 回しか呼ばれないため、owner の端末削除
-		// （DeletePCByID で pcs/{pc} 全消し）後に、**同一プロセスが dormant→復帰**
-		// して PushStatus すると、この tail が pcs/{pc} を {id,updated_at} だけで
-		// 再生成し agent_kind を永久に欠く→DroverPCs が当該 PC を落とし、その全
-		// セッションが他機のリモート注入から消える。ここで毎回書けば delete→
-		// recreate されても常に agent_kind を持つ（この state モジュールの
-		// PushStatus 書き手は herdr-drover agent のみ＝固定値で正しい）。
-		_, _ = c.fs.Collection("pcs").Doc(c.pcID).Set(ctx, map[string]any{
-			"id":         c.pcID,
-			"updated_at": time.Now().UTC().Format(time.RFC3339),
-			"agent_kind": "herdr-drover",
-		}, firestore.MergeAll)
-	}
-	return changed, nil
+	return c.pushSessions(ctx, c.pcID, sessions)
 }
 
 // CreatePairing は pairings/{codeHash} に {pc, scope, expires_at} を
@@ -257,6 +206,7 @@ func (c *Client) DeletePC(ctx context.Context) error {
 // する。Web 管理 UI の「端末ペアリング削除」用（古い/不要/失効端末を
 // 一覧から消す）。短命 relaygrants は TTL で自然失効するので対象外。
 func (c *Client) DeletePCByID(ctx context.Context, pcID string) error {
+	c.push.forgetPC(pcID) // 同一プロセスが復帰 push したとき実態（不在）を読み直す
 	return c.deletePC(ctx, pcID)
 }
 
@@ -401,6 +351,7 @@ func (c *Client) DeleteSession(ctx context.Context, key string) error {
 	if key == "" {
 		return nil
 	}
+	c.push.forget(c.push.key(c.pcID, key)) // 次に現れたら実態を読んで再生成する
 	_, err := c.fs.Collection("pcs").Doc(c.pcID).
 		Collection("sessions").Doc(key).Delete(ctx)
 	return err
